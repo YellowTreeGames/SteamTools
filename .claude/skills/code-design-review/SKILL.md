@@ -1,122 +1,135 @@
 ---
 name: code-design-review
-description: Review active branch changes for DRY and DOT violations, writing a report to temp/code-design-review.md. Used by eval loops — the calling agent retries until the report contains only "Code looks good."
+description: Orchestrate a multi-specialist code design review (DOT, DRY, Architect, Adversarial Critic), writing a final report to temp/code-design-review.md. Used by eval loops — the calling agent retries until the report contains only "Code looks good."
 ---
 
 # Code Design Review
 
-Use this skill when asked to review the design quality of active branch changes. The output is a report written to `temp/code-design-review.md`. The calling agent is the consumer — it reads the report and either fixes violations or stops when the report says **"Code looks good."** (verbatim, nothing else).
+Orchestrate a pipeline of four specialist agents reviewing the active branch changes, then update CLAUDE.md if the review passes.
 
-The two principles enforced here are:
+The pipeline:
+1. **DOT Review** (Haiku) + **DRY Review** (Haiku) + **Architect Review** (Sonnet) — run in parallel
+2. **Adversarial Critic** (Sonnet) — reads all three reports and filters pedantic or speculative findings
 
-- **DRY** (Don't Repeat Yourself) — Every piece of logic, data, or behavior should have a single authoritative location. Duplication is a violation whether it is identical code or near-identical code with minor variation.
-- **DOT** (Do One Thing) — Every function, class, and module should have one clear responsibility. A unit that does two things should be two units. The test: if you cannot name it without using "and", it fails DOT.
-
-Do not enforce style, naming, performance, or correctness here. Focus exclusively on DRY and DOT.
-
----
-
-## Phase 1: Identify Changed Files
-
-Get the diff against the merge base of the main branch:
-
-```
-git diff $(git merge-base HEAD main)...HEAD --name-only
-```
-
-If on main or the command fails, fall back to:
-
-```
-git diff HEAD~1...HEAD --name-only
-```
-
-Filter to source files only — skip `*.md`, `*.txt`, lock files, config files, and anything under `temp/`, `.todo/`, `data/`, or `migrations/`. If no source files changed, write "Code looks good." and stop.
+The final report lands at `temp/code-design-review.md`. The success string the calling agent polls for is **"Code looks good."** (verbatim, nothing else in the file).
 
 ---
 
-## Phase 2: Read the Diff
+## Phase 1: Run the Three Specialists in Parallel
 
-For each changed file, read:
+Spawn three background agents simultaneously using the Agent tool. Give each one the instructions from its skill, and specify the model explicitly.
 
-1. The full current file (to understand structure and context).
-2. The diff for that file (`git diff $(git merge-base HEAD main)...HEAD -- <file>`) to know which lines are new or modified.
+**Agent 1 — DOT Review (model: haiku)**
 
-Focus analysis on **added or changed lines**. Do not report violations that exist entirely in unchanged code — those are pre-existing issues outside the scope of this review.
+Prompt:
+> You are a DOT (Do One Thing) specialist. Review active branch changes for violations of the principle that every function, class, and module should have one clear responsibility.
+>
+> Step 1: Get changed source files via `git diff $(git merge-base HEAD main)...HEAD --name-only`. Fallback to `git diff HEAD~1...HEAD --name-only` if on main or the command fails. Filter to source files only — skip `*.md`, `*.txt`, lock files, config files, and anything under `temp/`, `.todo/`, `data/`, or `migrations/`.
+>
+> Step 2: For each changed source file, read the full file and its diff (`git diff $(git merge-base HEAD main)...HEAD -- <file>`). Focus analysis on added or changed lines only.
+>
+> Step 3: For each changed function, class, or module, ask: does it do exactly one thing? Signs of violation: "and" functions, mixed abstraction levels, god classes, side-effect surprise, oversized modules. Only flag violations introduced by this branch.
+>
+> Step 4: Write to `temp/dot-review.md`. If no violations, write exactly "No DOT violations." Otherwise use this format:
+> ```
+> ## DOT Violations
+> ### <Short title>
+> - **Location:** `<file>` — `<FunctionOrClassName>`
+> - **Issue:** <One sentence.>
+> - **Fix:** <One sentence.>
+> ```
+> Every finding must have a concrete fix. Never invent violations.
+
+**Agent 2 — DRY Review (model: haiku)**
+
+Prompt:
+> You are a DRY (Don't Repeat Yourself) specialist. Review active branch changes for violations of the principle that every piece of logic, data, or behavior should have a single authoritative location.
+>
+> Step 1: Get changed source files via `git diff $(git merge-base HEAD main)...HEAD --name-only`. Fallback to `git diff HEAD~1...HEAD --name-only` if on main or the command fails. Filter to source files only — skip `*.md`, `*.txt`, lock files, config files, and anything under `temp/`, `.todo/`, `data/`, or `migrations/`.
+>
+> Step 2: For each changed source file, read the full file and its diff (`git diff $(git merge-base HEAD main)...HEAD -- <file>`). Focus analysis on added or changed lines only.
+>
+> Step 3: Look for duplicated logic, duplicated data literals, copy-paste variants that want to be a parameterized function, and re-implemented stdlib/utility behavior. Only flag violations introduced by this branch. Name both duplicate sites (file + line range) for every finding.
+>
+> Step 4: Write to `temp/dry-review.md`. If no violations, write exactly "No DRY violations." Otherwise use this format:
+> ```
+> ## DRY Violations
+> ### <Short title>
+> - **Files:** `<file>:<lines>` and `<file>:<lines>`
+> - **Issue:** <One sentence.>
+> - **Fix:** <One sentence.>
+> ```
+> Every finding must name both duplicate sites and include a concrete fix. Never invent violations.
+
+**Agent 3 — Architect Review (model: sonnet)**
+
+Prompt:
+> You are an architecture specialist. Review active branch changes for high-level structural concerns. You are not doing line-by-line analysis — you are evaluating whether the design decisions introduced by this branch are sound.
+>
+> Step 1: Get changed source files via `git diff $(git merge-base HEAD main)...HEAD --name-only`. Fallback to `git diff HEAD~1...HEAD --name-only` if on main or the command fails. Filter to source files only.
+>
+> Step 2: For each changed source file, read the full file and its diff. Then follow imports one level deep — read files this codebase imports from (not stdlib, not third-party) to understand abstraction boundaries.
+>
+> Step 3: Look for structural concerns only — wrong abstraction layer, unnecessary coupling, missed abstraction, module boundary violations, readability at scale, design pattern mismatches. Propose sweeping changes if warranted. Do not flag line-level DRY or DOT issues.
+>
+> Step 4: Write to `temp/architect-review.md`. If no concerns, write exactly "No architectural concerns." Otherwise use this format:
+> ```
+> ## Architectural Concerns
+> ### <Short title>
+> - **Scope:** `<file(s)>` — `<what is affected>`
+> - **Issue:** <One or two sentences.>
+> - **Proposed fix:** <Concrete suggestion.>
+> ```
+> Every finding must include a concrete proposed fix. Never flag findings just to appear thorough.
+
+Wait for all three background agents to complete before proceeding.
 
 ---
 
-## Phase 3: Analyze for DRY Violations
+## Phase 2: Run the Adversarial Critic
 
-For each changed file, look for:
+Once all three specialist reports exist, spawn one foreground agent using the Agent tool with model: sonnet.
 
-- **Duplicated logic** — a block of code that does the same computation or transformation as another block elsewhere in the diff or in files it imports.
-- **Duplicated data** — the same literal value (string, number, dict key) appearing in multiple places where a named constant or config lookup would serve.
-- **Copy-paste variants** — two or more functions that are structurally identical except for one variable, where a single parameterized function would do.
-- **Re-implemented stdlib/utility behavior** — code that manually does what an existing helper (in this codebase or a standard library) already does.
-
-A violation must be **specific and actionable**: name the duplicate sites (file + line range), describe what they share, and suggest the consolidation (extract a function, define a constant, reuse an existing helper).
-
----
-
-## Phase 4: Analyze for DOT Violations
-
-For each changed function, class, or module, ask: does it do exactly one thing?
-
-Signs of a DOT violation:
-
-- **"And" functions** — a function that fetches data *and* transforms it *and* writes it. Each "and" is a separate responsibility.
-- **Mixed abstraction levels** — a function that mixes high-level orchestration with low-level detail in the same body.
-- **God classes** — a class that owns both data modeling and I/O, or business logic and presentation.
-- **Side-effect surprise** — a function whose name implies a query but also mutates state, or vice versa.
-- **Oversized modules** — a module that is clearly two or more unrelated concerns stitched together.
-
-A violation must be **specific and actionable**: name the function/class, describe the two (or more) things it does, and suggest the split.
-
----
-
-## Phase 5: Write the Report
-
-Ensure `temp/` exists at the project root (create it if not).
-
-Write the report to `temp/code-design-review.md`.
-
-**If there are no violations**, write exactly this and nothing else:
-
-```
-Code looks good.
-```
-
-**If there are violations**, write a report using this structure:
-
-```markdown
-# Code Design Review
-
-## DRY Violations
-
-### <Short title>
-- **Files:** `<file>:<lines>` and `<file>:<lines>`
-- **Issue:** <One sentence describing what is duplicated.>
-- **Fix:** <One sentence on what to do — extract a function, define a constant, etc.>
-
-(repeat for each DRY violation)
-
-## DOT Violations
-
-### <Short title>
-- **Location:** `<file>` — `<FunctionOrClassName>`
-- **Issue:** <One sentence describing the two or more things it does.>
-- **Fix:** <One sentence on how to split it.>
-
-(repeat for each DOT violation)
-```
-
-Omit a section entirely if there are no violations of that type. Do not include meta-commentary, summaries, or suggestions outside of violations. Keep each entry tight — one issue, one fix.
+Prompt:
+> You are an adversarial critic reviewing a code design pipeline's findings. Read the three specialist reports and challenge every finding ruthlessly. Your job is to dismiss anything pedantic, speculative, or premature.
+>
+> Step 1: Read `temp/dot-review.md`, `temp/dry-review.md`, `temp/architect-review.md`. Also read `CLAUDE.md` to understand intentional patterns.
+>
+> Step 2: For each finding, apply this checklist: Is it concrete? Is the fix simpler than the current code? Is the fix proportionate? Is this a real problem now, not just in theory? Does CLAUDE.md already address this? Would a competent developer disagree it's a problem? Dismiss any finding that fails any of these.
+>
+> Be especially skeptical of: architect proposals for large refactors, DRY findings where two things that look similar are actually different concepts, DOT findings on small readable functions.
+>
+> Step 3: Write to `temp/code-design-review.md`. If no findings survive, write ONLY the exact string "Code looks good." with nothing else in the file. If findings survive, use this structure:
+> ```
+> # Code Design Review
+>
+> ## DRY Violations
+> ### <title>
+> - **Files:** ...
+> - **Issue:** ...
+> - **Fix:** ...
+>
+> ## DOT Violations
+> ### <title>
+> - **Location:** ...
+> - **Issue:** ...
+> - **Fix:** ...
+>
+> ## Architectural Concerns
+> ### <title>
+> - **Scope:** ...
+> - **Issue:** ...
+> - **Proposed fix:** ...
+> ```
+> Omit sections with no survivors. Do not explain dismissals. Do not add new findings.
+> CRITICAL: If the verdict is clean, the file must contain ONLY "Code looks good." — no headers, no other text.
 
 ---
 
 ## Rules
 
-- Never report pre-existing code that was not touched by this branch.
-- Never flag something as a violation without a concrete fix suggestion.
-- Never invent violations to appear thorough. If the code is clean, say so.
-- The report is machine-read by the calling agent. The success string "Code looks good." must appear alone with no surrounding text.
+- The three specialist agents in Phase 1 must run in parallel (background: true).
+- The critic in Phase 2 must wait for all three to finish.
+- Never skip the critic — it is the quality gate, not a formality.
+- The reviewer never touches CLAUDE.md or any other documentation — that is handled separately by `/update-claude-md`.
+- The file `temp/code-design-review.md` is what the calling agent reads. Its content must match the spec exactly.

@@ -29,6 +29,8 @@ This runs in order: ruff format check → ruff lint → mypy type check → band
 
 After `run_checks.ps1` passes, run `/code-design-review` via a subagent (use the Agent tool) to keep the main context clean. When the subagent finishes, read its output from `temp/code-design-review.md` and iterate until it reports "Code looks good."
 
+Once the design review passes, run `/update-claude-md` via a subagent to keep this file current. The reviewer never touches documentation — CLAUDE.md updates are always a separate step performed by the main agent after the review is clean.
+
 ## Architecture
 
 All domain logic lives in `steamtools/` (the core library). The CLI and MCP server are thin routing layers that import from it. **The dataset is games-only by design** — DLC, demos, software, videos, hardware, mods, etc. are filtered out at every stage rather than stored and filtered later.

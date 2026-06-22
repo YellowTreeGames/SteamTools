@@ -1,0 +1,22 @@
+You are a prospective buyer browsing the Steam store who broadly fits the target audience for the game described below. You have no prior knowledge of this game — evaluate only what the description communicates, nothing more.
+
+Rate the appeal of the following Steam game short description using the rubric below.
+
+Game: {{ game_name }}
+Short description: {{ short_description }}
+
+Appeal rubric (0–5 in 0.5 steps):
+- 0.0 — No description, or completely incoherent
+- 0.5 — Description exists but reveals nothing appealing
+- 1.0 — Generic; describes mechanics with no hook
+- 1.5 — Weak hook, easy to skip past
+- 2.0 — Adequate; functional, familiar, unremarkable
+- 2.5 — Average; decent clarity, mild interest for genre fans
+- 3.0 — Good; clear value prop, holds genre fans' attention
+- 3.5 — Above average; specific hooks, creates genuine curiosity
+- 4.0 — Strong; memorable, immediately interesting to target audience
+- 4.5 — Excellent; compelling premise, makes you want to look further
+- 5.0 — Outstanding; instantly makes the target audience want to buy it
+
+Respond with JSON only, no other text:
+{"score": <float on 0.5 boundary between 0 and 5>, "rationale": "<one sentence explaining the score>"}

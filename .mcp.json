@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "steamtools": {
+      "type": "stdio",
+      "command": "uv",
+      "args": ["run", "python", "-m", "steamtools_mcp.server"],
+      "cwd": "C:\\Users\\atawz\\Apps\\SteamTools"
+    }
+  }
+}

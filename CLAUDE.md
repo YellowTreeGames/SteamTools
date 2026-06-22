@@ -16,7 +16,18 @@ Project is managed with `uv` (Python >=3.13, venv at `.venv/`).
   - `sto app-details fetch [--count N] [--sleep S]` — batch-fetch missing app details
 - Requires a Steam Web API key: copy `.env.example` to `.env` and set `STEAM_API_KEY` (get one at https://steamcommunity.com/dev/apikey). Loaded via `steamtools/config.py` (`python-dotenv`).
 
-No linter/test suite is configured yet — add this section once one exists.
+## Quality gate
+
+**All work is complete only when `run_checks.ps1` passes AND `/code-design-review` reports no issues.**
+
+Run the full quality gate:
+```
+.\run_checks.ps1
+```
+
+This runs in order: ruff format check → ruff lint → mypy type check → bandit security → pytest + coverage. Any failure stops the script. Do not consider a feature or fix done until the script exits cleanly.
+
+After `run_checks.ps1` passes, run `/code-design-review` via a subagent (use the Agent tool) to keep the main context clean. When the subagent finishes, read its output from `temp/code-design-review.md` and iterate until it reports "Code looks good."
 
 ## Architecture
 

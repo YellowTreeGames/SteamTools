@@ -9,20 +9,56 @@ auto_sync=True (the default).
 import json
 import time
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from steamtools.db.connection import get_connection, init_db
 from steamtools.db.staleness import needs_refresh_details, needs_refresh_reviews
 from steamtools.steam_client import (
     get_app_details as _steam_app_details,
+)
+from steamtools.steam_client import (
     get_app_list as _steam_app_list,
+)
+from steamtools.steam_client import (
     get_app_list_page as _steam_app_list_page,
+)
+from steamtools.steam_client import (
     get_review_counts as _steam_review_counts,
+)
+from steamtools.steam_client import (
     get_reviews_page as _steam_reviews_page,
 )
 
 DEFAULT_DETAILS_SLEEP: float = 1.5
 DEFAULT_REVIEWS_SLEEP: float = 1.0
+
+
+def _upsert_review_count(conn, appid: int, data: dict, now: str) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO app_review_counts "
+        "(appid, total_reviews, total_positive, total_negative, review_score, review_score_desc, fetched_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            appid,
+            data["total_reviews"],
+            data["total_positive"],
+            data["total_negative"],
+            data["review_score"],
+            data["review_score_desc"],
+            now,
+        ),
+    )
+
+
+def _filter_stale_review_rows(rows) -> list[int]:
+    return [
+        r["appid"]
+        for r in rows
+        if needs_refresh_reviews(
+            {"fetched_at": r["fetched_at"]} if r["fetched_at"] else None,
+            {"coming_soon": r["coming_soon"], "release_date": r["release_date"]},
+        )
+    ]
 
 
 class StoDB:
@@ -68,8 +104,7 @@ class StoDB:
     def app_details_stats(self) -> dict:
         with get_connection() as conn:
             row = conn.execute(
-                "SELECT COUNT(*) AS total, MAX(appid) AS last_appid, "
-                "MAX(fetched_at) AS last_fetched FROM app_details"
+                "SELECT COUNT(*) AS total, MAX(appid) AS last_appid, MAX(fetched_at) AS last_fetched FROM app_details"
             ).fetchone()
         return dict(row)
 
@@ -87,7 +122,7 @@ class StoDB:
                 last = conn.execute("SELECT MAX(appid) AS m FROM apps").fetchone()["m"] or 0
             apps = _steam_app_list_page(last_appid=last, max_results=count)["apps"]
 
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         with get_connection() as conn:
             conn.executemany(
                 """
@@ -103,9 +138,7 @@ class StoDB:
 
     # ── App Details ───────────────────────────────────────────────────────────
 
-    def get_app_details(
-        self, appids: list[int], auto_sync: bool = True
-    ) -> dict[int, dict | None]:
+    def get_app_details(self, appids: list[int], auto_sync: bool = True) -> dict[int, dict | None]:
         """Return app_details rows keyed by appid.
 
         With auto_sync=True, stale or missing rows are fetched from Steam
@@ -164,14 +197,12 @@ class StoDB:
 
         data = _steam_app_details(appid)
         time.sleep(self._details_sleep)
-        is_game = data is not None and data.get("type") == "game"
 
         with get_connection() as conn:
-            if is_game:
+            if data is not None and data.get("type") == "game":
                 row = self._row_from_details(appid, data)
                 conn.execute(
-                    f"INSERT OR REPLACE INTO app_details ({', '.join(row)}) "
-                    f"VALUES ({', '.join(f':{k}' for k in row)})",
+                    f"INSERT OR REPLACE INTO app_details ({', '.join(row)}) VALUES ({', '.join(f':{k}' for k in row)})",
                     row,
                 )
                 return {"status": "game", "appid": appid, "row": row, "detected_type": "game"}
@@ -184,15 +215,16 @@ class StoDB:
                     "detected_type": data.get("type") if data else None,
                 }
 
-    def _fetch_details_rows(self, appids: list[int]) -> dict[int, dict]:
+    def _fetch_rows(self, table: str, appids: list[int]) -> dict[int, dict]:
         if not appids:
             return {}
         ph = ",".join("?" * len(appids))
         with get_connection() as conn:
-            rows = conn.execute(
-                f"SELECT * FROM app_details WHERE appid IN ({ph})", appids
-            ).fetchall()
+            rows = conn.execute(f"SELECT * FROM {table} WHERE appid IN ({ph})", appids).fetchall()  # noqa: S608
         return {r["appid"]: dict(r) for r in rows}
+
+    def _fetch_details_rows(self, appids: list[int]) -> dict[int, dict]:
+        return self._fetch_rows("app_details", appids)
 
     @staticmethod
     def _row_from_details(appid: int, data: dict) -> dict:
@@ -231,14 +263,12 @@ class StoDB:
             "movies": json.dumps(data.get("movies") or []),
             "content_descriptors": json.dumps(data.get("content_descriptors") or {}),
             "background": data.get("background"),
-            "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "fetched_at": datetime.now(UTC).isoformat(),
         }
 
     # ── Review Counts ─────────────────────────────────────────────────────────
 
-    def get_review_counts(
-        self, appids: list[int], auto_sync: bool = True
-    ) -> dict[int, dict | None]:
+    def get_review_counts(self, appids: list[int], auto_sync: bool = True) -> dict[int, dict | None]:
         """Return app_review_counts rows keyed by appid.
 
         With auto_sync=True, applies the staleness policy and fetches from
@@ -249,12 +279,9 @@ class StoDB:
         details_map = self._fetch_details_rows(appids)
         existing = self._fetch_review_rows(appids)
         if auto_sync:
-            stale = [
-                aid for aid in appids
-                if needs_refresh_reviews(existing.get(aid), details_map.get(aid))
-            ]
+            stale = [aid for aid in appids if needs_refresh_reviews(existing.get(aid), details_map.get(aid))]
             if stale:
-                self._sync_reviews_for(stale)
+                self.sync_review_counts(appids=stale)
                 existing = self._fetch_review_rows(appids)
         return {aid: existing.get(aid) for aid in appids}
 
@@ -274,20 +301,14 @@ class StoDB:
         if limit is not None:
             candidates = candidates[:limit]
 
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         synced = 0
         for i, appid in enumerate(candidates, start=1):
             data = _steam_review_counts(appid)
             time.sleep(self._reviews_sleep)
             if data is not None:
                 with get_connection() as conn:
-                    conn.execute(
-                        "INSERT OR REPLACE INTO app_review_counts "
-                        "(appid, total_reviews, total_positive, total_negative, review_score, review_score_desc, fetched_at) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                        (appid, data["total_reviews"], data["total_positive"], data["total_negative"],
-                         data["review_score"], data["review_score_desc"], now),
-                    )
+                    _upsert_review_count(conn, appid, data, now)
                 synced += 1
             if on_progress:
                 on_progress(i, len(candidates), appid, data)
@@ -307,22 +328,13 @@ class StoDB:
                 LEFT JOIN app_review_counts arc ON arc.appid = er.appid
                 """
             ).fetchall()
-        return [
-            r["appid"] for r in rows
-            if needs_refresh_reviews(
-                {"fetched_at": r["fetched_at"]} if r["fetched_at"] else None,
-                {"coming_soon": r["coming_soon"], "release_date": r["release_date"]},
-            )
-        ]
+        return _filter_stale_review_rows(rows)
 
     def _stale_review_candidates(self, appids: list[int] | None) -> list[int]:
         if appids is not None:
             details_map = self._fetch_details_rows(appids)
             review_map = self._fetch_review_rows(appids)
-            return [
-                aid for aid in appids
-                if needs_refresh_reviews(review_map.get(aid), details_map.get(aid))
-            ]
+            return [aid for aid in appids if needs_refresh_reviews(review_map.get(aid), details_map.get(aid))]
         with get_connection() as conn:
             rows = conn.execute(
                 """
@@ -331,34 +343,11 @@ class StoDB:
                 LEFT JOIN app_review_counts arc ON arc.appid = ad.appid
                 """
             ).fetchall()
-        return [
-            r["appid"] for r in rows
-            if needs_refresh_reviews(
-                {"fetched_at": r["fetched_at"]} if r["fetched_at"] else None,
-                {"coming_soon": r["coming_soon"], "release_date": r["release_date"]},
-            )
-        ]
-
-    def _sync_reviews_for(self, appids: list[int]) -> None:
-        now = datetime.now(timezone.utc).isoformat()
-        for appid in appids:
-            data = _steam_review_counts(appid)
-            time.sleep(self._reviews_sleep)
-            if data is not None:
-                with get_connection() as conn:
-                    conn.execute(
-                        "INSERT OR REPLACE INTO app_review_counts "
-                        "(appid, total_reviews, total_positive, total_negative, review_score, review_score_desc, fetched_at) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                        (appid, data["total_reviews"], data["total_positive"], data["total_negative"],
-                         data["review_score"], data["review_score_desc"], now),
-                    )
+        return _filter_stale_review_rows(rows)
 
     def review_stats(self) -> dict:
         with get_connection() as conn:
-            row = conn.execute(
-                "SELECT COUNT(*) AS total, MAX(fetched_at) AS last_fetched FROM app_review_counts"
-            ).fetchone()
+            row = conn.execute("SELECT COUNT(*) AS total, MAX(fetched_at) AS last_fetched FROM app_review_counts").fetchone()
         return dict(row)
 
     def get_game_view(self, appid: int) -> dict | None:
@@ -389,14 +378,7 @@ class StoDB:
         return dict(row) if row else None
 
     def _fetch_review_rows(self, appids: list[int]) -> dict[int, dict]:
-        if not appids:
-            return {}
-        ph = ",".join("?" * len(appids))
-        with get_connection() as conn:
-            rows = conn.execute(
-                f"SELECT * FROM app_review_counts WHERE appid IN ({ph})", appids
-            ).fetchall()
-        return {r["appid"]: dict(r) for r in rows}
+        return self._fetch_rows("app_review_counts", appids)
 
     # ── Evals ─────────────────────────────────────────────────────────────────
 
@@ -471,7 +453,7 @@ class StoDB:
         rationale: str,
         model: str,
     ) -> int:
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         with get_connection() as conn:
             row = conn.execute(
                 "SELECT COALESCE(MAX(eval_number), 0) + 1 AS next FROM eval_results WHERE appid = ? AND eval_type = ?",
@@ -505,6 +487,78 @@ class StoDB:
 
     # ── Review Texts ──────────────────────────────────────────────────────────
 
+    def _open_review_session(self, appid: int, filter_type: str, max_reviews: int) -> int:
+        now = datetime.now(UTC).isoformat()
+        with get_connection() as conn:
+            cur = conn.execute(
+                "INSERT INTO review_fetch_sessions (appid, started_at, filter, max_reviews) VALUES (?, ?, ?, ?)",
+                (appid, now, filter_type, max_reviews),
+            )
+            return cur.lastrowid
+
+    def _paginate_reviews(
+        self,
+        appid: int,
+        max_reviews: int,
+        filter_type: str,
+        sleep: float,
+        on_progress: Callable[[int, int], None] | None,
+    ) -> tuple[int, str]:
+        cursor = "*"
+        fetched = 0
+        last_cursor = cursor
+        while fetched < max_reviews:
+            page = _steam_reviews_page(appid, cursor=cursor, num_per_page=100, filter_type=filter_type)
+            reviews = page["reviews"]
+            if not reviews:
+                break
+            now_ts = datetime.now(UTC).isoformat()
+            with get_connection() as conn:
+                conn.executemany(
+                    """
+                    INSERT OR IGNORE INTO app_reviews (
+                        review_id, appid, voted_up, votes_up, votes_funny,
+                        weighted_vote_score, steam_purchase, received_for_free,
+                        written_during_early_access, author_playtime_forever,
+                        author_playtime_last_two_weeks, review, timestamp_created, fetched_at
+                    ) VALUES (
+                        :review_id, :appid, :voted_up, :votes_up, :votes_funny,
+                        :weighted_vote_score, :steam_purchase, :received_for_free,
+                        :written_during_early_access, :author_playtime_forever,
+                        :author_playtime_last_two_weeks, :review, :timestamp_created, :fetched_at
+                    )
+                    """,
+                    [
+                        {
+                            **r,
+                            "review_id": r["recommendationid"],
+                            "appid": appid,
+                            "fetched_at": now_ts,
+                            "author_playtime_forever": (r.get("author") or {}).get("playtime_forever"),
+                            "author_playtime_last_two_weeks": (r.get("author") or {}).get("playtime_last_two_weeks"),
+                        }
+                        for r in reviews
+                    ],
+                )
+            fetched += len(reviews)
+            last_cursor = page["cursor"]
+            if on_progress:
+                on_progress(fetched, max_reviews)
+            next_cursor = page["cursor"]
+            if next_cursor == cursor or not next_cursor:
+                break
+            cursor = next_cursor
+            time.sleep(sleep)
+        return fetched, last_cursor
+
+    def _close_review_session(self, session_id: int, fetched: int, last_cursor: str, status: str) -> None:
+        done = datetime.now(UTC).isoformat()
+        with get_connection() as conn:
+            conn.execute(
+                "UPDATE review_fetch_sessions SET completed_at=?, reviews_fetched=?, last_cursor=?, status=? WHERE id=?",
+                (done, fetched, last_cursor, status, session_id),
+            )
+
     def fetch_reviews(
         self,
         appid: int,
@@ -519,83 +573,26 @@ class StoDB:
         or cursor exhausted, then closes the session. Safe to re-run; INSERT OR
         IGNORE prevents duplicates. Returns {"session_id": int, "reviews_fetched": int}.
         """
-        now = datetime.now(timezone.utc).isoformat()
-        with get_connection() as conn:
-            cur = conn.execute(
-                "INSERT INTO review_fetch_sessions (appid, started_at, filter, max_reviews) VALUES (?, ?, ?, ?)",
-                (appid, now, filter_type, max_reviews),
-            )
-            session_id = cur.lastrowid
-
-        cursor = "*"
-        fetched = 0
-        last_cursor = cursor
+        session_id = self._open_review_session(appid, filter_type, max_reviews)
+        fetched, last_cursor = 0, "*"
         try:
-            while fetched < max_reviews:
-                page = _steam_reviews_page(appid, cursor=cursor, num_per_page=100, filter_type=filter_type)
-                reviews = page["reviews"]
-                if not reviews:
-                    break
-
-                now_ts = datetime.now(timezone.utc).isoformat()
-                with get_connection() as conn:
-                    conn.executemany(
-                        """
-                        INSERT OR IGNORE INTO app_reviews (
-                            review_id, appid, voted_up, votes_up, votes_funny,
-                            weighted_vote_score, steam_purchase, received_for_free,
-                            written_during_early_access, author_playtime_forever,
-                            author_playtime_last_two_weeks, review, timestamp_created, fetched_at
-                        ) VALUES (
-                            :review_id, :appid, :voted_up, :votes_up, :votes_funny,
-                            :weighted_vote_score, :steam_purchase, :received_for_free,
-                            :written_during_early_access, :author_playtime_forever,
-                            :author_playtime_last_two_weeks, :review, :timestamp_created, :fetched_at
-                        )
-                        """,
-                        [
-                            {**r, "review_id": r["recommendationid"], "appid": appid, "fetched_at": now_ts}
-                            for r in reviews
-                        ],
-                    )
-
-                fetched += len(reviews)
-                last_cursor = page["cursor"]
-                if on_progress:
-                    on_progress(fetched, max_reviews)
-
-                next_cursor = page["cursor"]
-                if next_cursor == cursor or not next_cursor:
-                    break
-                cursor = next_cursor
-                time.sleep(sleep)
-
+            fetched, last_cursor = self._paginate_reviews(appid, max_reviews, filter_type, sleep, on_progress)
             status = "complete"
         except Exception:
             status = "failed"
             raise
         finally:
-            done = datetime.now(timezone.utc).isoformat()
-            with get_connection() as conn:
-                conn.execute(
-                    "UPDATE review_fetch_sessions SET completed_at=?, reviews_fetched=?, last_cursor=?, status=? WHERE id=?",
-                    (done, fetched, last_cursor, status, session_id),
-                )
-
+            self._close_review_session(session_id, fetched, last_cursor, status)
         return {"session_id": session_id, "reviews_fetched": fetched}
 
     def get_reviews(self, appid: int, min_words: int = 10) -> list[dict]:
         """Return stored review texts for appid meeting the minimum word count."""
         with get_connection() as conn:
             rows = conn.execute(
-                "SELECT review_id, review, voted_up, votes_up, author_playtime_forever "
-                "FROM app_reviews WHERE appid = ?",
+                "SELECT review_id, review, voted_up, votes_up, author_playtime_forever FROM app_reviews WHERE appid = ?",
                 (appid,),
             ).fetchall()
-        return [
-            dict(r) for r in rows
-            if len(r["review"].split()) >= min_words
-        ]
+        return [dict(r) for r in rows if len(r["review"].split()) >= min_words]
 
     def get_review_fetch_status(self, appid: int) -> dict | None:
         """Return the most recent review_fetch_sessions row for appid, or None."""
@@ -617,7 +614,7 @@ class StoDB:
         chroma_collection: str,
     ) -> int:
         """Insert a running review_topic_runs row and return its id."""
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         with get_connection() as conn:
             cur = conn.execute(
                 """
@@ -642,7 +639,7 @@ class StoDB:
 
     def save_topics(self, run_id: int, appid: int, topics: list[dict]) -> list[int]:
         """Bulk-insert topics for a run. Returns list of inserted topic ids."""
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         ids = []
         with get_connection() as conn:
             for t in topics:
@@ -654,8 +651,12 @@ class StoDB:
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        run_id, appid, t["cluster_label"], t.get("category_name"),
-                        t.get("description"), t["review_count"],
+                        run_id,
+                        appid,
+                        t["cluster_label"],
+                        t.get("category_name"),
+                        t.get("description"),
+                        t["review_count"],
                         json.dumps(t.get("sample_review_ids") or []),
                         json.dumps(t["centroid_vector"]) if t.get("centroid_vector") is not None else None,
                         now,
@@ -666,7 +667,7 @@ class StoDB:
 
     def save_topic_assignments(self, run_id: int, assignments: list[dict]) -> None:
         """Bulk-upsert review_topic_assignments rows."""
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         with get_connection() as conn:
             conn.executemany(
                 """
@@ -692,6 +693,13 @@ class StoDB:
                 ],
             )
 
+    def resolve_run_id(self, appid: int, run_id: int | None) -> int | None:
+        """Return run_id if provided, otherwise the latest run id for appid, or None if no runs exist."""
+        if run_id is not None:
+            return run_id
+        runs = self.get_topic_runs(appid)
+        return runs[0]["id"] if runs else None
+
     def get_topic_runs(self, appid: int) -> list[dict]:
         """Return all review_topic_runs for appid, newest first."""
         with get_connection() as conn:
@@ -713,9 +721,7 @@ class StoDB:
     def get_review_topics_status(self, appid: int) -> dict:
         """Return a summary dict for appid: review count, latest run, topics, uncategorized count."""
         with get_connection() as conn:
-            review_count = conn.execute(
-                "SELECT COUNT(*) FROM app_reviews WHERE appid = ?", (appid,)
-            ).fetchone()[0]
+            review_count = conn.execute("SELECT COUNT(*) FROM app_reviews WHERE appid = ?", (appid,)).fetchone()[0]
 
             run_row = conn.execute(
                 "SELECT * FROM review_topic_runs WHERE appid = ? ORDER BY id DESC LIMIT 1",

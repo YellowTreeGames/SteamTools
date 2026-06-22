@@ -13,6 +13,37 @@ REVIEWS_URL = "https://store.steampowered.com/appreviews/{appid}"
 _session = requests.Session()
 
 
+def _get_with_retry(url: str, params: dict, max_retries: int, context: str) -> requests.Response:
+    delay = 2.0
+    for _ in range(max_retries):
+        resp = _session.get(url, params=params, timeout=30)  # type: ignore[arg-type]
+        if resp.status_code == 429:
+            time.sleep(delay)
+            delay *= 2
+            continue
+        resp.raise_for_status()
+        return resp
+    raise RuntimeError(f"{context} kept getting rate-limited after {max_retries} retries")
+
+
+def _normalize_review(raw: dict) -> dict:
+    author = raw.get("author") or {}
+    return {
+        "recommendationid": raw.get("recommendationid"),
+        "voted_up": raw.get("voted_up"),
+        "votes_up": raw.get("votes_up"),
+        "votes_funny": raw.get("votes_funny"),
+        "weighted_vote_score": raw.get("weighted_vote_score"),
+        "steam_purchase": raw.get("steam_purchase"),
+        "received_for_free": raw.get("received_for_free"),
+        "written_during_early_access": raw.get("written_during_early_access"),
+        "author_playtime_forever": author.get("playtime_forever"),
+        "author_playtime_last_two_weeks": author.get("playtime_last_two_weeks"),
+        "review": raw.get("review"),
+        "timestamp_created": raw.get("timestamp_created"),
+    }
+
+
 def get_app_list_page(last_appid: int = 0, max_results: int = 50000) -> dict:
     """Fetches a single page of (appid, name) pairs Steam lists as a game.
 
@@ -40,7 +71,7 @@ def get_app_list_page(last_appid: int = 0, max_results: int = 50000) -> dict:
         "include_videos": "false",
         "include_hardware": "false",
     }
-    resp = _session.get(APP_LIST_URL, params=params, timeout=30)
+    resp = _session.get(APP_LIST_URL, params=params, timeout=30)  # type: ignore[arg-type]
     resp.raise_for_status()
     data = resp.json()["response"]
     return {
@@ -76,19 +107,11 @@ def get_app_details(appid: int, max_retries: int = 5) -> dict | None:
     429s, since this endpoint rate-limits aggressively.
     """
     params = {"appids": appid, "cc": "us", "l": "english"}
-    delay = 2.0
-    for attempt in range(max_retries):
-        resp = _session.get(APP_DETAILS_URL, params=params, timeout=30)
-        if resp.status_code == 429:
-            time.sleep(delay)
-            delay *= 2
-            continue
-        resp.raise_for_status()
-        payload = resp.json().get(str(appid))
-        if payload is None or not payload.get("success"):
-            return None
-        return payload["data"]
-    raise RuntimeError(f"appdetails for {appid} kept getting rate-limited after {max_retries} retries")
+    resp = _get_with_retry(APP_DETAILS_URL, params, max_retries, f"appdetails for {appid}")
+    payload = resp.json().get(str(appid))
+    if payload is None or not payload.get("success"):
+        return None
+    return payload["data"]
 
 
 def get_reviews_page(
@@ -115,42 +138,15 @@ def get_reviews_page(
         "review_type": "all",
         "purchase_type": "all",
     }
-    delay = 2.0
-    for _ in range(max_retries):
-        resp = _session.get(url, params=params, timeout=30)
-        if resp.status_code == 429:
-            time.sleep(delay)
-            delay *= 2
-            continue
-        resp.raise_for_status()
-        data = resp.json()
-
-        reviews_raw = data.get("reviews") or []
-        reviews = []
-        for r in reviews_raw:
-            author = r.get("author") or {}
-            reviews.append({
-                "recommendationid": r.get("recommendationid"),
-                "voted_up": r.get("voted_up"),
-                "votes_up": r.get("votes_up"),
-                "votes_funny": r.get("votes_funny"),
-                "weighted_vote_score": r.get("weighted_vote_score"),
-                "steam_purchase": r.get("steam_purchase"),
-                "received_for_free": r.get("received_for_free"),
-                "written_during_early_access": r.get("written_during_early_access"),
-                "author_playtime_forever": author.get("playtime_forever"),
-                "author_playtime_last_two_weeks": author.get("playtime_last_two_weeks"),
-                "review": r.get("review"),
-                "timestamp_created": r.get("timestamp_created"),
-            })
-
-        summary = data.get("query_summary") or {}
-        return {
-            "reviews": reviews,
-            "cursor": data.get("cursor", ""),
-            "total_reviews": summary.get("total_reviews", 0),
-        }
-    raise RuntimeError(f"reviews page for {appid} kept getting rate-limited after {max_retries} retries")
+    resp = _get_with_retry(url, params, max_retries, f"reviews page for {appid}")
+    data = resp.json()
+    reviews = [_normalize_review(r) for r in (data.get("reviews") or [])]
+    summary = data.get("query_summary") or {}
+    return {
+        "reviews": reviews,
+        "cursor": data.get("cursor", ""),
+        "total_reviews": summary.get("total_reviews", 0),
+    }
 
 
 def get_review_counts(appid: int, max_retries: int = 5) -> dict | None:
@@ -163,25 +159,17 @@ def get_review_counts(appid: int, max_retries: int = 5) -> dict | None:
     """
     url = REVIEWS_URL.format(appid=appid)
     params = {"json": 1, "num_per_page": 0, "language": "all"}
-    delay = 2.0
-    for _ in range(max_retries):
-        resp = _session.get(url, params=params, timeout=30)
-        if resp.status_code == 429:
-            time.sleep(delay)
-            delay *= 2
-            continue
-        resp.raise_for_status()
-        data = resp.json()
-        if not data.get("success"):
-            return None
-        summary = data.get("query_summary")
-        if not summary:
-            return None
-        return {
-            "total_reviews": summary.get("total_reviews", 0),
-            "total_positive": summary.get("total_positive", 0),
-            "total_negative": summary.get("total_negative", 0),
-            "review_score": summary.get("review_score"),
-            "review_score_desc": summary.get("review_score_desc"),
-        }
-    raise RuntimeError(f"review counts for {appid} kept getting rate-limited after {max_retries} retries")
+    resp = _get_with_retry(url, params, max_retries, f"review counts for {appid}")
+    data = resp.json()
+    if not data.get("success"):
+        return None
+    summary = data.get("query_summary")
+    if not summary:
+        return None
+    return {
+        "total_reviews": summary.get("total_reviews", 0),
+        "total_positive": summary.get("total_positive", 0),
+        "total_negative": summary.get("total_negative", 0),
+        "review_score": summary.get("review_score"),
+        "review_score_desc": summary.get("review_score_desc"),
+    }

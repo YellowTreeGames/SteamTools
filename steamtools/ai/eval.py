@@ -7,8 +7,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy import stats
 
-from steamtools.config import GEMINI_MODEL, MAX_SCORES
 from steamtools.ai import gemini_client
+from steamtools.config import GEMINI_MODEL, MAX_SCORES
 from steamtools.db import StoDB
 
 
@@ -17,7 +17,9 @@ def run_evals(db: StoDB, n: int, appids: list[int], eval_type_name: str, fill: b
     eval_type_id = eval_type["id"]
     template_path = Path(__file__).parent.parent / "prompts" / eval_type["template_file"]
 
-    games = db.get_pending_eval_games(eval_type_id, list(appids), n=None if fill else n, fill=fill, max_scores=MAX_SCORES, min_reviews=min_reviews)
+    games = db.get_pending_eval_games(
+        eval_type_id, list(appids), n=None if fill else n, fill=fill, max_scores=MAX_SCORES, min_reviews=min_reviews
+    )
 
     if not games:
         if not db.has_app_details():

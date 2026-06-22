@@ -1,6 +1,7 @@
 """sto - command line interface for the SteamTools data pipeline."""
 
-from typing import List, Optional
+from collections.abc import Callable
+from typing import Any
 
 import typer
 
@@ -21,6 +22,14 @@ app.add_typer(reviews_group, name="app-reviews")
 app.add_typer(review_topics_group, name="review-topics")
 app.add_typer(ai_group, name="ai")
 ai_group.add_typer(eval_group, name="eval")
+
+
+def _make_progress_logger(every: int, status_fn: Callable[[Any], str]) -> Callable:
+    def log(i: int, total: int, aid: int, data: Any) -> None:
+        if i % every == 0 or i == total:
+            print(f"[{i}/{total}] appid={aid} {status_fn(data)}")
+
+    return log
 
 
 @app_group.command("info")
@@ -49,9 +58,9 @@ def app_search(query: str = typer.Argument(..., help="Substring to search for in
 
 @app_group.command("fetch")
 def app_fetch(
-    count: Optional[int] = typer.Option(
+    count: int | None = typer.Option(
         None, help="Fetch one page of this size from the last known appid, instead of a full refresh."
-    )
+    ),
 ):
     """Fetch the master list of applications."""
     db = StoDB()
@@ -71,9 +80,9 @@ def app_details_info():
 
 @details_group.command("fetch")
 def details_fetch(
-    count: Optional[int] = typer.Option(None, help="Max number of apps to fetch this run."),
+    count: int | None = typer.Option(None, help="Max number of apps to fetch this run."),
     sleep: float = typer.Option(DEFAULT_DETAILS_SLEEP, help="Delay between requests."),
-    appid: Optional[int] = typer.Option(None, help="Fetch a single explicit appid instead of the pending batch."),
+    appid: int | None = typer.Option(None, help="Fetch a single explicit appid instead of the pending batch."),
     force: bool = typer.Option(False, help="Re-fetch even if details are current (requires --appid)."),
 ):
     """Fetch deeper details for known applications."""
@@ -94,14 +103,12 @@ def details_fetch(
         else:
             print(f"appid={appid} status=already_current (use --force to re-fetch)")
     else:
-        def log(i: int, total: int, aid: int, result: dict) -> None:
-            if i % 50 == 0 or i == total:
-                s = result["status"]
-                if s == "not_a_game":
-                    s = f"dropped (type={result['detected_type']!r})"
-                print(f"[{i}/{total}] appid={aid} {s}")
 
-        n = db.sync_app_details(limit=count, on_progress=log)
+        def _details_status(result: dict) -> str:
+            s = result["status"]
+            return f"dropped (type={result['detected_type']!r})" if s == "not_a_game" else s
+
+        n = db.sync_app_details(limit=count, on_progress=_make_progress_logger(50, _details_status))
         print(f"Processed {n} apps.")
 
 
@@ -116,17 +123,12 @@ def app_reviews_info():
 
 @reviews_group.command("fetch")
 def reviews_fetch(
-    count: Optional[int] = typer.Option(None, help="Max number of apps to fetch this run."),
+    count: int | None = typer.Option(None, help="Max number of apps to fetch this run."),
     sleep: float = typer.Option(DEFAULT_REVIEWS_SLEEP, help="Delay between requests."),
 ):
     """Fetch review counts for stale or missing apps."""
     db = StoDB(reviews_sleep=sleep)
-
-    def log(i: int, total: int, aid: int, data: dict | None) -> None:
-        if i % 50 == 0 or i == total:
-            status = f"total_reviews={data['total_reviews']}" if data else "no_data"
-            print(f"[{i}/{total}] appid={aid} {status}")
-
+    log = _make_progress_logger(50, lambda data: f"total_reviews={data['total_reviews']}" if data else "no_data")
     n = db.sync_review_counts(limit=count, on_progress=log)
     print(f"Synced {n} review counts.")
 
@@ -134,18 +136,21 @@ def reviews_fetch(
 @eval_group.command("short-description")
 def eval_short_description(
     n: int = typer.Option(50, "-n", help="Number of games to sample for evaluation."),
-    appid: List[int] = typer.Option([], help="Score a specific appid instead of sampling."),
+    appid: list[int] = typer.Option([], help="Score a specific appid instead of sampling."),
     eval_type: str = typer.Option("Appeal", "--eval-type", help="Name of eval type (see eval_types table)."),
-    show_eval: bool = typer.Option(False, "--eval", help="Show scatter plot of score vs. review count."),
     fill: bool = typer.Option(False, "--fill", help="Evaluate all games below MAX_SCORES, ignoring -n."),
     min_reviews: int = typer.Option(1, "--min-reviews", help="Minimum total reviews required to be a candidate."),
 ):
-    """Score game short descriptions with an LLM, or visualize score vs. review count."""
-    db = StoDB()
-    if show_eval:
-        ai_eval.plot_correlation(db, eval_type)
-    else:
-        ai_eval.run_evals(db, n, appid, eval_type, fill=fill, min_reviews=min_reviews)
+    """Score game short descriptions with an LLM."""
+    ai_eval.run_evals(StoDB(), n, appid, eval_type, fill=fill, min_reviews=min_reviews)
+
+
+@eval_group.command("plot")
+def eval_plot(
+    eval_type: str = typer.Option("Appeal", "--eval-type", help="Name of eval type to plot."),
+):
+    """Visualize score vs. review count scatter plot."""
+    ai_eval.plot_correlation(StoDB(), eval_type)
 
 
 @eval_group.command("sync")
@@ -159,12 +164,7 @@ def eval_sync(
         print("All evaluated games have fresh review counts.")
         return
     print(f"{len(appids)} evaluated games need review count refresh.")
-
-    def log(i: int, total: int, aid: int, data: dict | None) -> None:
-        if i % 25 == 0 or i == total:
-            status = f"total_reviews={data['total_reviews']}" if data else "no data"
-            print(f"[{i}/{total}] appid={aid} {status}")
-
+    log = _make_progress_logger(25, lambda data: f"total_reviews={data['total_reviews']}" if data else "no data")
     synced = db.sync_review_counts(appids=appids, on_progress=log)
     print(f"Synced {synced} review counts.")
 
@@ -193,18 +193,9 @@ def review_topics_discover(
     min_cluster_size: int = typer.Option(15, "--min-cluster-size", help="Minimum reviews per cluster."),
 ):
     """Embed reviews, cluster with HDBSCAN, and name clusters with Gemini."""
-    from steamtools.vectordb import VectorManager
-    from steamtools.review_topics.embedder import ReviewEmbedder
-    from steamtools.review_topics.clusterer import ReviewClusterer
-    from steamtools.review_topics.labeler import ClusterLabeler
     from steamtools.review_topics.pipeline import ReviewTopicPipeline
 
-    db = StoDB()
-    vm = VectorManager()
-    embedder = ReviewEmbedder()
-    clusterer = ReviewClusterer(min_cluster_size=min_cluster_size)
-    labeler = ClusterLabeler()
-    pipeline = ReviewTopicPipeline(db, vm, embedder, clusterer, labeler)
+    pipeline = ReviewTopicPipeline.from_defaults(StoDB(), min_cluster_size=min_cluster_size)
 
     print(f"Running topic discovery for appid={appid}...")
     result = pipeline.run_discovery(appid, min_cluster_size=min_cluster_size)
@@ -221,31 +212,21 @@ def review_topics_discover(
 @review_topics_group.command("classify")
 def review_topics_classify(
     appid: int = typer.Argument(..., help="Steam appid to classify reviews for."),
-    run_id: Optional[int] = typer.Option(None, "--run-id", help="Topic run id (defaults to latest)."),
+    run_id: int | None = typer.Option(None, "--run-id", help="Topic run id (defaults to latest)."),
     threshold: float = typer.Option(0.85, "--threshold", help="Cosine similarity threshold for assignment."),
 ):
     """Classify reviews against discovered topics."""
-    from steamtools.vectordb import VectorManager
-    from steamtools.review_topics.embedder import ReviewEmbedder
-    from steamtools.review_topics.clusterer import ReviewClusterer
-    from steamtools.review_topics.labeler import ClusterLabeler
     from steamtools.review_topics.pipeline import ReviewTopicPipeline
 
     db = StoDB()
-    runs = db.get_topic_runs(appid)
-    if not runs:
+    resolved_run_id = db.resolve_run_id(appid, run_id)
+    if resolved_run_id is None:
         print(f"No topic runs found for appid={appid}. Run discover first.")
         raise typer.Exit(1)
 
-    resolved_run_id = run_id if run_id is not None else runs[0]["id"]
     print(f"Classifying reviews for appid={appid} run_id={resolved_run_id}...")
 
-    vm = VectorManager()
-    embedder = ReviewEmbedder()
-    clusterer = ReviewClusterer()
-    labeler = ClusterLabeler()
-    pipeline = ReviewTopicPipeline(db, vm, embedder, clusterer, labeler)
-
+    pipeline = ReviewTopicPipeline.from_defaults(db)
     result = pipeline.classify_reviews(appid, resolved_run_id, threshold=threshold)
     if "error" in result:
         print(f"Error: {result['error']}")

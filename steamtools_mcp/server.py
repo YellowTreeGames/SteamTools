@@ -57,15 +57,10 @@ def discover_review_topics(appid: int, min_cluster_size: int = 15) -> dict:
     Returns {"run_id": int, "clusters_found": int, "noise_count": int, "topics": [...]}.
     Requires reviews to be fetched first via fetch_review_texts.
     """
-    from steamtools.vectordb import VectorManager
-    from steamtools.review_topics.embedder import ReviewEmbedder
-    from steamtools.review_topics.clusterer import ReviewClusterer
-    from steamtools.review_topics.labeler import ClusterLabeler
     from steamtools.review_topics.pipeline import ReviewTopicPipeline
 
     db = StoDB()
-    vm = VectorManager()
-    pipeline = ReviewTopicPipeline(db, vm, ReviewEmbedder(), ReviewClusterer(min_cluster_size), ClusterLabeler())
+    pipeline = ReviewTopicPipeline.from_defaults(db, min_cluster_size=min_cluster_size)
     return pipeline.run_discovery(appid, min_cluster_size=min_cluster_size)
 
 
@@ -76,20 +71,14 @@ def classify_review_topics(appid: int, run_id: int | None = None, threshold: flo
     Uses the latest run for the appid if run_id is omitted.
     Returns {"assigned": int, "uncategorized": int}.
     """
-    from steamtools.vectordb import VectorManager
-    from steamtools.review_topics.embedder import ReviewEmbedder
-    from steamtools.review_topics.clusterer import ReviewClusterer
-    from steamtools.review_topics.labeler import ClusterLabeler
     from steamtools.review_topics.pipeline import ReviewTopicPipeline
 
     db = StoDB()
-    runs = db.get_topic_runs(appid)
-    if not runs:
+    resolved_run_id = db.resolve_run_id(appid, run_id)
+    if resolved_run_id is None:
         return {"error": f"No topic runs found for appid={appid}."}
-    resolved_run_id = run_id if run_id is not None else runs[0]["id"]
 
-    vm = VectorManager()
-    pipeline = ReviewTopicPipeline(db, vm, ReviewEmbedder(), ReviewClusterer(), ClusterLabeler())
+    pipeline = ReviewTopicPipeline.from_defaults(db)
     return pipeline.classify_reviews(appid, resolved_run_id, threshold=threshold)
 
 

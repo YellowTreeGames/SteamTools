@@ -8,6 +8,13 @@ class ReviewClusterer:
 
     def fit(self, vectors: np.ndarray) -> dict:
         """Run HDBSCAN and return labels, per-cluster centroids, and noise count."""
+        if len(vectors) < self.min_cluster_size:
+            return {
+                "labels": np.full(len(vectors), -1, dtype=int),
+                "centroids": {},
+                "noise_count": len(vectors),
+            }
+
         clusterer = HDBSCAN(min_cluster_size=self.min_cluster_size)
         labels = clusterer.fit_predict(vectors)
 

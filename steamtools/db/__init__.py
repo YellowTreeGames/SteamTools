@@ -1,5 +1,5 @@
 from steamtools.db.connection import DB_PATH, get_connection, init_db
-from steamtools.db.store import DEFAULT_DETAILS_SLEEP, DEFAULT_REVIEWS_SLEEP, StoDB
+from steamtools.db.store import DEFAULT_DETAILS_SLEEP, StoDB
 
 __all__ = [
     "StoDB",
@@ -7,5 +7,4 @@ __all__ = [
     "init_db",
     "DB_PATH",
     "DEFAULT_DETAILS_SLEEP",
-    "DEFAULT_REVIEWS_SLEEP",
 ]

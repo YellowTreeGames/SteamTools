@@ -1,4 +1,4 @@
-"""stdio MCP server exposing search_games and get_app_details tools.
+"""stdio MCP server exposing SteamTools data pipeline tools.
 
 Run via: uv run python -m steamtools_mcp.server
 """
@@ -8,6 +8,16 @@ from mcp.server.fastmcp import FastMCP
 from steamtools.db import DEFAULT_DETAILS_SLEEP, StoDB
 
 mcp = FastMCP("steamtools")
+
+
+@mcp.tool()
+def status() -> dict:
+    """Get combined status of apps and app-details tables.
+
+    Returns apps_total, apps_with_details, apps_missing_details,
+    apps_last_fetched, details_total, details_last_fetched.
+    """
+    return StoDB().status()
 
 
 @mcp.tool()
@@ -28,67 +38,25 @@ def get_app_details(appid: int, force: bool = False) -> dict:
 
 
 @mcp.tool()
-def get_game(appid: int) -> dict | None:
-    """Get a combined view of app, app details, and review counts for a game.
+def fetch_app_list(count: int | None = None) -> dict:
+    """Fetch the master list of apps from Steam and upsert into the apps table.
 
-    Returns a single dict merging fields from apps, app_details, and app_review_counts.
-    Returns None if the appid is not in the apps table.
-    All values are from the local cache — call get_app_details first to trigger a
-    fresh fetch if details are missing or stale.
+    count=None does a full catalog refresh; count=N fetches one page of that size.
+    Returns {"upserted": int}.
     """
-    return StoDB().get_game_view(appid)
+    n = StoDB().sync_app_list(count)
+    return {"upserted": n}
 
 
 @mcp.tool()
-def fetch_review_texts(appid: int, max_reviews: int = 10000, filter_type: str = "all") -> dict:
-    """Fetch review texts for a game from Steam and store them locally.
+def fetch_app_details(count: int | None = None) -> dict:
+    """Fetch details for all apps that are missing or stale (>30 days).
 
-    Returns {"session_id": int, "reviews_fetched": int}.
-    filter_type: "all", "recent", or "funny".
+    count limits the number of apps processed in this run.
+    Returns {"processed": int}.
     """
-    return StoDB().fetch_reviews(appid, max_reviews=max_reviews, filter_type=filter_type)
-
-
-@mcp.tool()
-def discover_review_topics(appid: int, min_cluster_size: int = 15) -> dict:
-    """Run topic discovery on locally stored reviews for a game.
-
-    Embeds reviews, clusters with HDBSCAN, names clusters with Gemini.
-    Returns {"run_id": int, "clusters_found": int, "noise_count": int, "topics": [...]}.
-    Requires reviews to be fetched first via fetch_review_texts.
-    """
-    from steamtools.review_topics.pipeline import ReviewTopicPipeline
-
-    db = StoDB()
-    pipeline = ReviewTopicPipeline.from_defaults(db, min_cluster_size=min_cluster_size)
-    return pipeline.run_discovery(appid, min_cluster_size=min_cluster_size)
-
-
-@mcp.tool()
-def classify_review_topics(appid: int, run_id: int | None = None, threshold: float = 0.85) -> dict:
-    """Classify reviews against discovered topics for a game.
-
-    Uses the latest run for the appid if run_id is omitted.
-    Returns {"assigned": int, "uncategorized": int}.
-    """
-    from steamtools.review_topics.pipeline import ReviewTopicPipeline
-
-    db = StoDB()
-    resolved_run_id = db.resolve_run_id(appid, run_id)
-    if resolved_run_id is None:
-        return {"error": f"No topic runs found for appid={appid}."}
-
-    pipeline = ReviewTopicPipeline.from_defaults(db)
-    return pipeline.classify_reviews(appid, resolved_run_id, threshold=threshold)
-
-
-@mcp.tool()
-def get_review_topics_status(appid: int) -> dict:
-    """Get topic discovery status for a game.
-
-    Returns review count, latest run info, topics list, and uncategorized count.
-    """
-    return StoDB().get_review_topics_status(appid)
+    n = StoDB().sync_app_details(limit=count)
+    return {"processed": n}
 
 
 if __name__ == "__main__":

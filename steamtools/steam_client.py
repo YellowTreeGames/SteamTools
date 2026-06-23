@@ -8,7 +8,6 @@ from steamtools.config import STEAM_API_KEY
 
 APP_LIST_URL = "https://api.steampowered.com/IStoreService/GetAppList/v1/"
 APP_DETAILS_URL = "https://store.steampowered.com/api/appdetails"
-REVIEWS_URL = "https://store.steampowered.com/appreviews/{appid}"
 
 _session = requests.Session()
 
@@ -26,37 +25,10 @@ def _get_with_retry(url: str, params: dict, max_retries: int, context: str) -> r
     raise RuntimeError(f"{context} kept getting rate-limited after {max_retries} retries")
 
 
-def _normalize_review(raw: dict) -> dict:
-    author = raw.get("author") or {}
-    return {
-        "recommendationid": raw.get("recommendationid"),
-        "voted_up": raw.get("voted_up"),
-        "votes_up": raw.get("votes_up"),
-        "votes_funny": raw.get("votes_funny"),
-        "weighted_vote_score": raw.get("weighted_vote_score"),
-        "steam_purchase": raw.get("steam_purchase"),
-        "received_for_free": raw.get("received_for_free"),
-        "written_during_early_access": raw.get("written_during_early_access"),
-        "author_playtime_forever": author.get("playtime_forever"),
-        "author_playtime_last_two_weeks": author.get("playtime_last_two_weeks"),
-        "review": raw.get("review"),
-        "timestamp_created": raw.get("timestamp_created"),
-    }
-
-
 def get_app_list_page(last_appid: int = 0, max_results: int = 50000) -> dict:
     """Fetches a single page of (appid, name) pairs Steam lists as a game.
 
-    Steam retired the old free ISteamApps/GetAppList/v2 endpoint; the
-    replacement (IStoreService/GetAppList/v1) requires an API key and is
-    paginated via last_appid/have_more_results. include_games=true /
-    everything else false filters out dlc/software/videos/hardware at the
-    source - this project only wants games. appdetails-confirmed type is
-    still re-checked downstream (processes/fetch_app_details.py), since
-    this flag isn't a perfect proxy for appdetails' own type field.
-
-    Returns {"apps": [...], "have_more_results": bool, "last_appid": int},
-    where last_appid is the cursor to pass back in for the next page.
+    Returns {"apps": [...], "have_more_results": bool, "last_appid": int}.
     """
     if not STEAM_API_KEY:
         raise RuntimeError("STEAM_API_KEY is not set. Copy .env.example to .env and fill it in.")
@@ -82,11 +54,7 @@ def get_app_list_page(last_appid: int = 0, max_results: int = 50000) -> dict:
 
 
 def get_app_list() -> list[dict]:
-    """Returns every (appid, name) pair Steam lists as a game.
-
-    Loops get_app_list_page from appid 0 until exhausted - a full catalog
-    refresh.
-    """
+    """Returns every (appid, name) pair Steam lists as a game (full catalog refresh)."""
     apps = []
     last_appid = 0
     while True:
@@ -95,16 +63,14 @@ def get_app_list() -> list[dict]:
         if not page["have_more_results"]:
             break
         last_appid = page["last_appid"]
-
     return apps
 
 
 def get_app_details(appid: int, max_retries: int = 5) -> dict | None:
     """Fetches appdetails for a single appid.
 
-    Returns the "data" payload on success, or None if Steam reports no data
-    for this appid (delisted, region-locked, etc.). Retries with backoff on
-    429s, since this endpoint rate-limits aggressively.
+    Returns the "data" payload on success, or None if Steam reports no data.
+    Retries with backoff on 429s.
     """
     params = {"appids": appid, "cc": "us", "l": "english"}
     resp = _get_with_retry(APP_DETAILS_URL, params, max_retries, f"appdetails for {appid}")
@@ -112,64 +78,3 @@ def get_app_details(appid: int, max_retries: int = 5) -> dict | None:
     if payload is None or not payload.get("success"):
         return None
     return payload["data"]
-
-
-def get_reviews_page(
-    appid: int,
-    cursor: str = "*",
-    num_per_page: int = 100,
-    filter_type: str = "all",
-    language: str = "english",
-    max_retries: int = 5,
-) -> dict:
-    """Fetch one page of review texts for an appid.
-
-    Returns {"reviews": [...], "cursor": str, "total_reviews": int}.
-    Each review dict contains review text plus author/vote metadata.
-    Retries with exponential backoff on 429s.
-    """
-    url = REVIEWS_URL.format(appid=appid)
-    params = {
-        "json": 1,
-        "cursor": cursor,
-        "num_per_page": num_per_page,
-        "filter": filter_type,
-        "language": language,
-        "review_type": "all",
-        "purchase_type": "all",
-    }
-    resp = _get_with_retry(url, params, max_retries, f"reviews page for {appid}")
-    data = resp.json()
-    reviews = [_normalize_review(r) for r in (data.get("reviews") or [])]
-    summary = data.get("query_summary") or {}
-    return {
-        "reviews": reviews,
-        "cursor": data.get("cursor", ""),
-        "total_reviews": summary.get("total_reviews", 0),
-    }
-
-
-def get_review_counts(appid: int, max_retries: int = 5) -> dict | None:
-    """Fetches review counts for a single appid from the store reviews endpoint.
-
-    Returns {"total_reviews": int, "total_positive": int, "total_negative": int,
-             "review_score": int, "review_score_desc": str}
-    or None if Steam returns no data. Retries with backoff on 429s.
-    No API key required; language=all returns global totals.
-    """
-    url = REVIEWS_URL.format(appid=appid)
-    params = {"json": 1, "num_per_page": 0, "language": "all"}
-    resp = _get_with_retry(url, params, max_retries, f"review counts for {appid}")
-    data = resp.json()
-    if not data.get("success"):
-        return None
-    summary = data.get("query_summary")
-    if not summary:
-        return None
-    return {
-        "total_reviews": summary.get("total_reviews", 0),
-        "total_positive": summary.get("total_positive", 0),
-        "total_negative": summary.get("total_negative", 0),
-        "review_score": summary.get("review_score"),
-        "review_score_desc": summary.get("review_score_desc"),
-    }

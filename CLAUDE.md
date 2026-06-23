@@ -10,11 +10,10 @@ Project is managed with `uv` (Python >=3.13, venv at `.venv/`).
 - Add a dependency: `uv add <package>`
 - Run a module: `uv run python -m <package>.<module>`
 - Run the CLI: `uv run sto <command>` (entrypoint is `steamtools_cli/cli.py`, built with Typer)
-  - `sto status` — combined status from both tables
-  - `sto app info` — stats on the apps table
-  - `sto app fetch [--count N]` — refresh the master app list
-  - `sto app-details info` — stats on the app_details table
-  - `sto app-details fetch [--count N] [--sleep S] [--appid ID] [--force]` — batch-fetch missing app details
+  - `sto info [--app] [--app-details]` — combined status from all tables; narrow with flags
+  - `sto fetch [--app] [--app-details] [--count N] [--sleep S] [--appid ID] [--force]` — fetch apps and/or details from Steam; defaults to both
+  - `sto reviews fetch --appid ID [--language L] [--force]` — fetch all reviews for a game and store them locally
+  - `sto reviews info [--appid ID]` — show stored review stats; with `--appid`, shows that game's summary
 - Requires a Steam Web API key: copy `.env.example` to `.env` and set `STEAM_API_KEY` (get one at https://steamcommunity.com/dev/apikey). Loaded via `steamtools/config.py` (`python-dotenv`).
 
 ## Testing
@@ -69,16 +68,18 @@ Once the design review passes, run `/update-claude-md` via a subagent to keep th
 All domain logic lives in `steamtools/` (the core library). The CLI and MCP server are thin routing layers that import from it. **The dataset is games-only by design** — DLC, demos, software, videos, hardware, mods, etc. are filtered out at every stage rather than stored and filtered later.
 
 - `steamtools/config.py` — loads `STEAM_API_KEY` from `.env` via python-dotenv.
-- `steamtools/steam_client.py` — thin HTTP wrappers around the Steam Web API (`get_app_list`, `get_app_list_page`, `get_app_details`).
+- `steamtools/steam_client.py` — thin HTTP wrappers around the Steam Web API (`get_app_list`, `get_app_list_page`, `get_app_details`, `get_app_reviews`).
 - `steamtools/db/` — **the central database API**. All reads and writes go through `StoDB` (defined in `store.py`). Never open raw `get_connection()` calls outside this package; add a method to `StoDB` instead.
-  - `connection.py` — `DB_PATH`, `SCHEMA`, `get_connection()`, `init_db()`. The DB file lives at `data/steamtools.db` (gitignored). On init, drops any legacy tables (evals, reviews, topics) and ensures only `apps` and `app_details` exist.
-  - `staleness.py` — `needs_refresh_details(row)`: app_details are stale after 30 days.
+  - `connection.py` — `DB_PATH`, `SCHEMA`, `get_connection()`, `init_db()`. The DB file lives at `data/steamtools.db` (gitignored). Schema includes `apps`, `app_details`, `app_review_summary`, and `app_reviews`. On init, drops legacy tables and runs additive column migrations.
+  - `staleness.py` — `needs_refresh_details(row)`: app_details are stale after 30 days. `needs_refresh_review_summary(row)`: review summary is stale after 7 days.
   - `store.py` — `StoDB` class. **StoDB is a cache over Steam**: `get_*` methods always check the DB first and only hit Steam when data is missing or stale. `sync_*` methods are explicit pipeline operations (bulk prefetch, force-refresh). Key methods:
-    - `status()` / `app_stats()` / `app_details_stats()` — DB stats
+    - `status()` / `app_stats()` / `app_details_stats()` / `review_stats()` — DB stats
     - `sync_app_list(count)` — upsert apps table from Steam
     - `get_app_details(appids)` — returns `dict[appid → row | None]`; DB-first, fetches from Steam for stale/missing, returns None for confirmed non-games
-    - `sync_app_details(limit, on_progress)` — bulk prefetch pipeline operation (used by `sto app-details fetch`)
+    - `sync_app_details(limit, on_progress)` — bulk prefetch pipeline operation (used by `sto fetch --app-details`)
     - `sync_app_details_one(appid, force)` — explicit single-appid fetch with status result; used by CLI `--appid` and MCP `get_app_details`
+    - `sync_reviews(appid, force, language)` — paginate Steam review API and upsert `app_reviews` + `app_review_summary`
+    - `get_review_summary(appid)` — DB-first review summary fetch; refreshes if stale
     - `search_apps(query)` — name substring search
 - `steamtools_cli/` — CLI routing only, no business logic. Entrypoint: `sto` → `steamtools_cli.cli:app`.
-- `steamtools_mcp/` — MCP server. Tools: `status`, `search_games`, `get_app_details`, `fetch_app_list`, `fetch_app_details`. Entrypoint: `uv run python -m steamtools_mcp.server`.
+- `steamtools_mcp/` — MCP server. Tools: `status`, `search_games`, `get_app_details`, `fetch_app_list`, `fetch_app_details`, `fetch_reviews`, `get_review_summary`. Entrypoint: `uv run python -m steamtools_mcp.server`.

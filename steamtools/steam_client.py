@@ -8,6 +8,7 @@ from steamtools.config import STEAM_API_KEY
 
 APP_LIST_URL = "https://api.steampowered.com/IStoreService/GetAppList/v1/"
 APP_DETAILS_URL = "https://store.steampowered.com/api/appdetails"
+APP_REVIEWS_URL = "https://store.steampowered.com/appreviews/{appid}"
 
 _session = requests.Session()
 
@@ -64,6 +65,33 @@ def get_app_list() -> list[dict]:
             break
         last_appid = page["last_appid"]
     return apps
+
+
+def get_app_reviews(
+    appid: int,
+    cursor: str = "*",
+    language: str = "all",
+    filter: str = "all",
+    num_per_page: int = 100,
+    max_retries: int = 5,
+) -> dict:
+    """Fetch one page of reviews for an appid.
+
+    Returns the full JSON response: {"success": int, "query_summary": {...},
+    "reviews": [...], "cursor": str}. No API key required.
+    """
+    params = {
+        "json": 1,
+        "cursor": cursor,
+        "language": language,
+        "filter": filter,
+        "num_per_page": num_per_page,
+        "review_type": "all",
+        "purchase_type": "all",
+    }
+    url = APP_REVIEWS_URL.format(appid=appid)
+    resp = _get_with_retry(url, params, max_retries, f"reviews for {appid}")
+    return resp.json()
 
 
 def get_app_details(appid: int, max_retries: int = 5) -> dict | None:

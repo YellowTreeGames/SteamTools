@@ -28,7 +28,6 @@ _DROP_TABLES = [
     "review_topics",
     "review_topic_runs",
     "review_fetch_sessions",
-    "app_reviews",
     "app_review_counts",
     "eval_results",
     "eval_types",
@@ -77,6 +76,41 @@ CREATE TABLE IF NOT EXISTS app_details (
     movies TEXT,
     content_descriptors TEXT,
     background TEXT,
+    fetched_at TEXT NOT NULL
+);
+
+-- Aggregate review stats per game; one row per appid, refreshed every 7 days.
+CREATE TABLE IF NOT EXISTS app_review_summary (
+    appid INTEGER PRIMARY KEY REFERENCES apps(appid),
+    total_reviews INTEGER,
+    total_positive INTEGER,
+    total_negative INTEGER,
+    review_score INTEGER,
+    review_score_desc TEXT,
+    fetched_at TEXT NOT NULL
+);
+
+-- Individual review records; immutable once written (no deleted-review cleanup).
+CREATE TABLE IF NOT EXISTS app_reviews (
+    recommendationid INTEGER PRIMARY KEY,
+    appid INTEGER NOT NULL REFERENCES apps(appid),
+    author_steamid TEXT,
+    author_num_games_owned INTEGER,
+    author_num_reviews INTEGER,
+    author_playtime_forever INTEGER,
+    author_playtime_at_review INTEGER,
+    language TEXT,
+    review TEXT,
+    timestamp_created INTEGER,
+    timestamp_updated INTEGER,
+    voted_up INTEGER,
+    votes_up INTEGER,
+    votes_funny INTEGER,
+    weighted_vote_score REAL,
+    comment_count INTEGER,
+    steam_purchase INTEGER,
+    received_for_free INTEGER,
+    written_during_early_access INTEGER,
     fetched_at TEXT NOT NULL
 );
 """

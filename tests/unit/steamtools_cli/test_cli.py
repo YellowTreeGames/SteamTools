@@ -17,12 +17,27 @@ _DETAILS_STATS = {
     "total": 60,
     "last_fetched": "2025-01-15T00:00:00+00:00",
 }
+_REVIEW_SUMMARY = {
+    "appid": 10,
+    "total_reviews": 850,
+    "total_positive": 800,
+    "total_negative": 50,
+    "review_score": 8,
+    "review_score_desc": "Very Positive",
+    "fetched_at": "2025-01-15T00:00:00+00:00",
+}
+_REVIEW_STATS = {
+    "games_with_reviews": 3,
+    "total_reviews": 1200,
+    "last_fetched": "2025-01-15T00:00:00+00:00",
+}
 
 
 def _mock_db(**method_overrides) -> MagicMock:
     db = MagicMock()
     db.app_stats.return_value = _APP_STATS
     db.app_details_stats.return_value = _DETAILS_STATS
+    db.review_stats.return_value = _REVIEW_STATS
     db.sync_app_list.return_value = 100
     db.sync_app_details.return_value = 5
     db.sync_app_details_one.return_value = {
@@ -53,10 +68,17 @@ class TestInfoCommand:
         assert "60" in result.output
         assert "40" in result.output
 
+    def test_shows_review_stats(self):
+        with patch("steamtools_cli.cli.StoDB", return_value=_mock_db()):
+            result = runner.invoke(app, ["info"])
+        assert "1200" in result.output
+        assert "3" in result.output
+
     def test_shows_never_when_last_fetched_is_none(self):
         db = _mock_db()
         db.app_stats.return_value = {**_APP_STATS, "last_fetched": None}
         db.app_details_stats.return_value = {**_DETAILS_STATS, "last_fetched": None}
+        db.review_stats.return_value = {**_REVIEW_STATS, "last_fetched": None}
         with patch("steamtools_cli.cli.StoDB", return_value=db):
             result = runner.invoke(app, ["info"])
         assert "never" in result.output
@@ -80,6 +102,65 @@ class TestInfoAppFlag:
         with patch("steamtools_cli.cli.StoDB", return_value=db):
             result = runner.invoke(app, ["info", "--app"])
         assert "never" in result.output
+
+
+class TestInfoAppDetailsFlag:
+    def test_exits_zero(self):
+        with patch("steamtools_cli.cli.StoDB", return_value=_mock_db()):
+            result = runner.invoke(app, ["info", "--app-details"])
+        assert result.exit_code == 0
+
+    def test_shows_total(self):
+        with patch("steamtools_cli.cli.StoDB", return_value=_mock_db()):
+            result = runner.invoke(app, ["info", "--app-details"])
+        assert "60" in result.output
+
+    def test_shows_never_when_last_fetched_is_none(self):
+        db = _mock_db()
+        db.app_details_stats.return_value = {**_DETAILS_STATS, "last_fetched": None}
+        with patch("steamtools_cli.cli.StoDB", return_value=db):
+            result = runner.invoke(app, ["info", "--app-details"])
+        assert "never" in result.output
+
+
+class TestInfoReviewsFlag:
+    def test_exits_zero(self):
+        with patch("steamtools_cli.cli.StoDB", return_value=_mock_db()):
+            result = runner.invoke(app, ["info", "--reviews"])
+        assert result.exit_code == 0
+
+    def test_global_stats_printed(self):
+        with patch("steamtools_cli.cli.StoDB", return_value=_mock_db()):
+            result = runner.invoke(app, ["info", "--reviews"])
+        assert "3" in result.output
+        assert "1200" in result.output
+
+    def test_never_when_last_fetched_is_none(self):
+        db = _mock_db()
+        db.review_stats.return_value = {**_REVIEW_STATS, "last_fetched": None}
+        with patch("steamtools_cli.cli.StoDB", return_value=db):
+            result = runner.invoke(app, ["info", "--reviews"])
+        assert "never" in result.output
+
+    def test_appid_summary_printed(self):
+        db = _mock_db()
+        db.get_review_summary.return_value = _REVIEW_SUMMARY
+        with patch("steamtools_cli.cli.StoDB", return_value=db):
+            result = runner.invoke(app, ["info", "--reviews", "--appid", "3283790"])
+        assert "Very Positive" in result.output
+        assert "850" in result.output
+
+    def test_appid_none_summary_prints_message(self):
+        db = _mock_db()
+        db.get_review_summary.return_value = None
+        with patch("steamtools_cli.cli.StoDB", return_value=db):
+            result = runner.invoke(app, ["info", "--reviews", "--appid", "9999"])
+        assert "No review summary" in result.output
+
+    def test_appid_without_reviews_flag_exits_nonzero(self):
+        with patch("steamtools_cli.cli.StoDB", return_value=_mock_db()):
+            result = runner.invoke(app, ["info", "--appid", "123"])
+        assert result.exit_code != 0
 
 
 class TestFetchCommand:
@@ -126,25 +207,6 @@ class TestFetchAppFlag:
             result = runner.invoke(app, ["fetch", "--app", "--count", "500"])
         assert result.exit_code == 0
         MockDB.return_value.sync_app_list.assert_called_once_with(500)
-
-
-class TestInfoAppDetailsFlag:
-    def test_exits_zero(self):
-        with patch("steamtools_cli.cli.StoDB", return_value=_mock_db()):
-            result = runner.invoke(app, ["info", "--app-details"])
-        assert result.exit_code == 0
-
-    def test_shows_total(self):
-        with patch("steamtools_cli.cli.StoDB", return_value=_mock_db()):
-            result = runner.invoke(app, ["info", "--app-details"])
-        assert "60" in result.output
-
-    def test_shows_never_when_last_fetched_is_none(self):
-        db = _mock_db()
-        db.app_details_stats.return_value = {**_DETAILS_STATS, "last_fetched": None}
-        with patch("steamtools_cli.cli.StoDB", return_value=db):
-            result = runner.invoke(app, ["info", "--app-details"])
-        assert "never" in result.output
 
 
 class TestFetchAppDetailsFlag:
@@ -214,6 +276,56 @@ class TestFetchAppDetailsFlag:
 
     def test_appid_without_app_details_flag_exits_nonzero(self):
         result = runner.invoke(app, ["fetch", "--app", "--appid", "10"])
+        assert result.exit_code != 0
+
+
+class TestFetchReviewsFlag:
+    def test_exits_zero(self):
+        db = _mock_db()
+        db.sync_reviews.return_value = {"status": "fetched", "summary": _REVIEW_SUMMARY, "reviews_fetched": 10}
+        with patch("steamtools_cli.cli.StoDB", return_value=db):
+            result = runner.invoke(app, ["fetch", "--reviews", "--appid", "3283790"])
+        assert result.exit_code == 0
+
+    def test_prints_fetched_count(self):
+        db = _mock_db()
+        db.sync_reviews.return_value = {"status": "fetched", "summary": _REVIEW_SUMMARY, "reviews_fetched": 42}
+        with patch("steamtools_cli.cli.StoDB", return_value=db):
+            result = runner.invoke(app, ["fetch", "--reviews", "--appid", "3283790"])
+        assert "42" in result.output
+
+    def test_prints_score_and_totals(self):
+        db = _mock_db()
+        db.sync_reviews.return_value = {"status": "fetched", "summary": _REVIEW_SUMMARY, "reviews_fetched": 1}
+        with patch("steamtools_cli.cli.StoDB", return_value=db):
+            result = runner.invoke(app, ["fetch", "--reviews", "--appid", "3283790"])
+        assert "Very Positive" in result.output
+        assert "800" in result.output
+        assert "50" in result.output
+
+    def test_already_current_prints_message(self):
+        db = _mock_db()
+        db.sync_reviews.return_value = {"status": "already_current", "summary": _REVIEW_SUMMARY, "reviews_fetched": 0}
+        with patch("steamtools_cli.cli.StoDB", return_value=db):
+            result = runner.invoke(app, ["fetch", "--reviews", "--appid", "3283790"])
+        assert "already_current" in result.output
+
+    def test_force_passed_to_sync(self):
+        db = _mock_db()
+        db.sync_reviews.return_value = {"status": "fetched", "summary": _REVIEW_SUMMARY, "reviews_fetched": 1}
+        with patch("steamtools_cli.cli.StoDB", return_value=db):
+            runner.invoke(app, ["fetch", "--reviews", "--appid", "3283790", "--force"])
+        db.sync_reviews.assert_called_once_with(3283790, force=True, language="all")
+
+    def test_language_flag_passed_to_sync(self):
+        db = _mock_db()
+        db.sync_reviews.return_value = {"status": "fetched", "summary": _REVIEW_SUMMARY, "reviews_fetched": 1}
+        with patch("steamtools_cli.cli.StoDB", return_value=db):
+            runner.invoke(app, ["fetch", "--reviews", "--appid", "3283790", "--language", "english"])
+        db.sync_reviews.assert_called_once_with(3283790, force=False, language="english")
+
+    def test_reviews_without_appid_exits_nonzero(self):
+        result = runner.invoke(app, ["fetch", "--reviews"])
         assert result.exit_code != 0
 
 

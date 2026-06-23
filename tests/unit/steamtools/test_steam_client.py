@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import requests
 
-from steamtools.steam_client import get_app_details, get_app_list, get_app_list_page
+from steamtools.steam_client import get_app_details, get_app_list, get_app_list_page, get_app_reviews
 
 
 def _mock_response(status_code: int = 200, json_data: dict | None = None) -> MagicMock:
@@ -155,3 +155,59 @@ class TestGetAppDetails:
         assert params["appids"] == 99
         assert params["cc"] == "us"
         assert params["l"] == "english"
+
+
+class TestGetAppReviews:
+    _REVIEW_PAYLOAD = {
+        "success": 1,
+        "query_summary": {
+            "total_reviews": 100,
+            "total_positive": 90,
+            "total_negative": 10,
+            "review_score": 8,
+            "review_score_desc": "Very Positive",
+        },
+        "reviews": [{"recommendationid": "1"}],
+        "cursor": "nextcursor",
+    }
+
+    def test_happy_path_returns_full_payload(self):
+        resp = _mock_response(200, self._REVIEW_PAYLOAD)
+        with patch("steamtools.steam_client._session") as mock_session:
+            mock_session.get.return_value = resp
+            result = get_app_reviews(3283790)
+        assert result["success"] == 1
+        assert result["query_summary"]["total_reviews"] == 100
+        assert result["cursor"] == "nextcursor"
+
+    def test_sends_correct_params(self):
+        resp = _mock_response(200, self._REVIEW_PAYLOAD)
+        with patch("steamtools.steam_client._session") as mock_session:
+            mock_session.get.return_value = resp
+            get_app_reviews(3283790, cursor="abc", language="english", filter="recent", num_per_page=50)
+        params = mock_session.get.call_args.kwargs["params"]
+        assert params["json"] == 1
+        assert params["cursor"] == "abc"
+        assert params["language"] == "english"
+        assert params["filter"] == "recent"
+        assert params["num_per_page"] == 50
+        assert params["review_type"] == "all"
+        assert params["purchase_type"] == "all"
+
+    def test_url_includes_appid(self):
+        resp = _mock_response(200, self._REVIEW_PAYLOAD)
+        with patch("steamtools.steam_client._session") as mock_session:
+            mock_session.get.return_value = resp
+            get_app_reviews(9999)
+        url = mock_session.get.call_args.args[0]
+        assert "9999" in url
+
+    def test_retries_on_429(self):
+        rate_limited = _mock_response(429)
+        ok = _mock_response(200, self._REVIEW_PAYLOAD)
+        with patch("steamtools.steam_client._session") as mock_session:
+            mock_session.get.side_effect = [rate_limited, ok]
+            with patch("steamtools.steam_client.time.sleep"):
+                result = get_app_reviews(1)
+        assert result["success"] == 1
+        assert mock_session.get.call_count == 2

@@ -59,5 +59,28 @@ def fetch_app_details(count: int | None = None) -> dict:
     return {"processed": n}
 
 
+@mcp.tool()
+def fetch_reviews(appid: int, force: bool = False, language: str = "all") -> dict:
+    """Fetch and store all reviews for a game by appid.
+
+    Paginates through Steam's review API and upserts both the aggregate summary
+    and individual review rows. Skips the fetch if the summary is <7 days old
+    unless force=True.
+
+    Returns {"status", "summary", "reviews_fetched"}.
+    """
+    return StoDB().sync_reviews(appid, force=force, language=language)
+
+
+@mcp.tool()
+def get_review_summary(appid: int) -> dict | None:
+    """Get the review summary for a game by appid.
+
+    Returns the stored summary row if fresh, otherwise fetches from Steam first.
+    Returns None if no summary could be retrieved.
+    """
+    return StoDB().get_review_summary(appid)
+
+
 if __name__ == "__main__":
     mcp.run()

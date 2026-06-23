@@ -27,13 +27,25 @@ class TestInitDb:
             row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='eval_results'").fetchone()
         assert row is None
 
-    def test_drops_legacy_app_reviews_table(self, tmp_db):
-        with sqlite3.connect(conn_mod.DB_PATH) as c:
-            c.execute("CREATE TABLE IF NOT EXISTS app_reviews (id INTEGER PRIMARY KEY)")
+    def test_creates_app_review_summary_table(self, tmp_db):
+        init_db()
+        with get_connection() as conn:
+            row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='app_review_summary'").fetchone()
+        assert row is not None
+
+    def test_creates_app_reviews_table(self, tmp_db):
         init_db()
         with get_connection() as conn:
             row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='app_reviews'").fetchone()
-        assert row is None
+        assert row is not None
+
+    def test_app_reviews_table_has_expected_columns(self, tmp_db):
+        init_db()
+        with get_connection() as conn:
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(app_reviews)").fetchall()}
+        assert "recommendationid" in cols
+        assert "voted_up" in cols
+        assert "review" in cols
 
     def test_idempotent_second_call_does_not_raise(self, tmp_db):
         init_db()

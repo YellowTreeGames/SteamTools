@@ -6,6 +6,80 @@ from unittest.mock import patch
 
 from tests.conftest import RYDER_APPID, RYDER_STEAM_DATA
 
+_REVIEW_PAGE_1 = {
+    "success": 1,
+    "query_summary": {
+        "num_reviews": 2,
+        "review_score": 8,
+        "review_score_desc": "Very Positive",
+        "total_positive": 800,
+        "total_negative": 50,
+        "total_reviews": 850,
+    },
+    "reviews": [
+        {
+            "recommendationid": "111",
+            "author": {
+                "steamid": "76561198000000001",
+                "num_games_owned": 100,
+                "num_reviews": 5,
+                "playtime_forever": 120,
+                "playtime_at_review": 60,
+            },
+            "language": "english",
+            "review": "Great game!",
+            "timestamp_created": 1700000000,
+            "timestamp_updated": 1700000001,
+            "voted_up": True,
+            "votes_up": 10,
+            "votes_funny": 1,
+            "weighted_vote_score": "0.75",
+            "comment_count": 0,
+            "steam_purchase": True,
+            "received_for_free": False,
+            "written_during_early_access": False,
+        }
+    ],
+    "cursor": "page2cursor",
+}
+
+_REVIEW_PAGE_2 = {
+    "success": 1,
+    "query_summary": {
+        "num_reviews": 2,
+        "review_score": 8,
+        "review_score_desc": "Very Positive",
+        "total_positive": 800,
+        "total_negative": 50,
+        "total_reviews": 850,
+    },
+    "reviews": [
+        {
+            "recommendationid": "222",
+            "author": {
+                "steamid": "76561198000000002",
+                "num_games_owned": 50,
+                "num_reviews": 2,
+                "playtime_forever": 30,
+                "playtime_at_review": 20,
+            },
+            "language": "english",
+            "review": "Not bad.",
+            "timestamp_created": 1700000100,
+            "timestamp_updated": 1700000100,
+            "voted_up": False,
+            "votes_up": 0,
+            "votes_funny": 0,
+            "weighted_vote_score": "0.0",
+            "comment_count": 0,
+            "steam_purchase": True,
+            "received_for_free": False,
+            "written_during_early_access": False,
+        }
+    ],
+    "cursor": "page2cursor",  # same cursor signals end of pagination
+}
+
 
 def _insert_app(appid: int, name: str = "Test Game") -> None:
     from steamtools.db.connection import get_connection
@@ -305,3 +379,162 @@ class TestRowFromDetails:
         data = {**RYDER_STEAM_DATA, "metacritic": {"score": 85, "url": "https://metacritic.com/game/x"}}
         row = StoDB._row_from_details(RYDER_APPID, data)
         assert row["metacritic_score"] == 85
+
+
+class TestSyncReviews:
+    def test_fetched_status_on_first_call(self, fresh_db):
+        _insert_app(RYDER_APPID, "Ryder")
+        with patch("steamtools.db.store._steam_app_reviews", side_effect=[_REVIEW_PAGE_1, _REVIEW_PAGE_2]):
+            result = fresh_db.sync_reviews(RYDER_APPID)
+        assert result["status"] == "fetched"
+
+    def test_reviews_persisted_to_db(self, fresh_db):
+        _insert_app(RYDER_APPID, "Ryder")
+        with patch("steamtools.db.store._steam_app_reviews", side_effect=[_REVIEW_PAGE_1, _REVIEW_PAGE_2]):
+            result = fresh_db.sync_reviews(RYDER_APPID)
+        assert result["reviews_fetched"] == 2
+
+    def test_summary_persisted_to_db(self, fresh_db):
+        _insert_app(RYDER_APPID, "Ryder")
+        with patch("steamtools.db.store._steam_app_reviews", side_effect=[_REVIEW_PAGE_1, _REVIEW_PAGE_2]):
+            fresh_db.sync_reviews(RYDER_APPID)
+        s = fresh_db.review_stats()
+        assert s["games_with_reviews"] == 1
+        assert s["total_reviews"] == 2
+
+    def test_summary_fields_correct(self, fresh_db):
+        _insert_app(RYDER_APPID, "Ryder")
+        with patch("steamtools.db.store._steam_app_reviews", side_effect=[_REVIEW_PAGE_1, _REVIEW_PAGE_2]):
+            result = fresh_db.sync_reviews(RYDER_APPID)
+        summary = result["summary"]
+        assert summary["total_positive"] == 800
+        assert summary["total_negative"] == 50
+        assert summary["review_score_desc"] == "Very Positive"
+
+    def test_already_current_skips_steam_call(self, fresh_db):
+        _insert_app(RYDER_APPID, "Ryder")
+        with patch("steamtools.db.store._steam_app_reviews", side_effect=[_REVIEW_PAGE_1, _REVIEW_PAGE_2]):
+            fresh_db.sync_reviews(RYDER_APPID)
+        with patch("steamtools.db.store._steam_app_reviews") as mock_steam:
+            result = fresh_db.sync_reviews(RYDER_APPID, force=False)
+        assert result["status"] == "already_current"
+        mock_steam.assert_not_called()
+
+    def test_force_refetches_current_summary(self, fresh_db):
+        _insert_app(RYDER_APPID, "Ryder")
+        with patch("steamtools.db.store._steam_app_reviews", side_effect=[_REVIEW_PAGE_1, _REVIEW_PAGE_2]):
+            fresh_db.sync_reviews(RYDER_APPID)
+        with patch("steamtools.db.store._steam_app_reviews", side_effect=[_REVIEW_PAGE_1, _REVIEW_PAGE_2]) as mock_steam:
+            result = fresh_db.sync_reviews(RYDER_APPID, force=True)
+        assert result["status"] == "fetched"
+        assert mock_steam.call_count == 2
+
+    def test_success_false_stops_pagination(self, fresh_db):
+        _insert_app(RYDER_APPID, "Ryder")
+        failed_page = {"success": 0}
+        with patch("steamtools.db.store._steam_app_reviews", return_value=failed_page):
+            result = fresh_db.sync_reviews(RYDER_APPID)
+        assert result["reviews_fetched"] == 0
+
+    def test_empty_reviews_stops_pagination(self, fresh_db):
+        _insert_app(RYDER_APPID, "Ryder")
+        empty_page = {**_REVIEW_PAGE_1, "reviews": []}
+        with patch("steamtools.db.store._steam_app_reviews", return_value=empty_page):
+            result = fresh_db.sync_reviews(RYDER_APPID)
+        assert result["reviews_fetched"] == 0
+
+
+class TestGetReviewSummary:
+    def test_returns_summary_when_fresh(self, fresh_db):
+        _insert_app(RYDER_APPID, "Ryder")
+        with patch("steamtools.db.store._steam_app_reviews", side_effect=[_REVIEW_PAGE_1, _REVIEW_PAGE_2]):
+            fresh_db.sync_reviews(RYDER_APPID)
+        with patch("steamtools.db.store._steam_app_reviews") as mock_steam:
+            summary = fresh_db.get_review_summary(RYDER_APPID)
+        mock_steam.assert_not_called()
+        assert summary is not None
+        assert summary["total_reviews"] == 850
+
+    def test_fetches_when_missing(self, fresh_db):
+        _insert_app(RYDER_APPID, "Ryder")
+        with patch("steamtools.db.store._steam_app_reviews", side_effect=[_REVIEW_PAGE_1, _REVIEW_PAGE_2]) as mock_steam:
+            summary = fresh_db.get_review_summary(RYDER_APPID)
+        assert mock_steam.called
+        assert summary is not None
+
+    def test_fetches_when_stale(self, fresh_db):
+        from steamtools.db.connection import get_connection
+
+        _insert_app(RYDER_APPID, "Ryder")
+        stale_date = (datetime.now(UTC) - timedelta(days=8)).isoformat()
+        with get_connection() as conn:
+            conn.execute(
+                """INSERT INTO app_review_summary
+                   (appid, total_reviews, total_positive, total_negative,
+                    review_score, review_score_desc, fetched_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (RYDER_APPID, 100, 90, 10, 8, "Very Positive", stale_date),
+            )
+        with patch("steamtools.db.store._steam_app_reviews", side_effect=[_REVIEW_PAGE_1, _REVIEW_PAGE_2]) as mock_steam:
+            fresh_db.get_review_summary(RYDER_APPID)
+        assert mock_steam.called
+
+
+class TestReviewStats:
+    def test_empty_db(self, fresh_db):
+        s = fresh_db.review_stats()
+        assert s["games_with_reviews"] == 0
+        assert s["total_reviews"] == 0
+        assert s["last_fetched"] is None
+
+    def test_counts_after_sync(self, fresh_db):
+        _insert_app(RYDER_APPID, "Ryder")
+        with patch("steamtools.db.store._steam_app_reviews", side_effect=[_REVIEW_PAGE_1, _REVIEW_PAGE_2]):
+            fresh_db.sync_reviews(RYDER_APPID)
+        s = fresh_db.review_stats()
+        assert s["games_with_reviews"] == 1
+        assert s["total_reviews"] == 2
+        assert s["last_fetched"] is not None
+
+
+class TestRowFromReview:
+    def test_all_fields_mapped(self):
+        from steamtools.db.store import StoDB
+
+        review = _REVIEW_PAGE_1["reviews"][0]
+        row = StoDB._row_from_review(RYDER_APPID, review, "2025-01-01T00:00:00+00:00")
+        assert row["recommendationid"] == 111
+        assert row["appid"] == RYDER_APPID
+        assert row["author_steamid"] == "76561198000000001"
+        assert row["author_playtime_forever"] == 120
+        assert row["author_playtime_at_review"] == 60
+        assert row["language"] == "english"
+        assert row["review"] == "Great game!"
+        assert row["voted_up"] == 1
+        assert row["votes_up"] == 10
+        assert row["weighted_vote_score"] == 0.75
+        assert row["steam_purchase"] == 1
+        assert row["received_for_free"] == 0
+        assert row["written_during_early_access"] == 0
+
+    def test_negative_review_voted_up_zero(self):
+        from steamtools.db.store import StoDB
+
+        review = _REVIEW_PAGE_2["reviews"][0]
+        row = StoDB._row_from_review(RYDER_APPID, review, "2025-01-01T00:00:00+00:00")
+        assert row["voted_up"] == 0
+
+    def test_weighted_vote_score_cast_to_float(self):
+        from steamtools.db.store import StoDB
+
+        review = {**_REVIEW_PAGE_1["reviews"][0], "weighted_vote_score": "0.123456"}
+        row = StoDB._row_from_review(RYDER_APPID, review, "2025-01-01T00:00:00+00:00")
+        assert isinstance(row["weighted_vote_score"], float)
+
+    def test_missing_author_fields_default_to_none(self):
+        from steamtools.db.store import StoDB
+
+        review = {**_REVIEW_PAGE_1["reviews"][0], "author": {}}
+        row = StoDB._row_from_review(RYDER_APPID, review, "2025-01-01T00:00:00+00:00")
+        assert row["author_steamid"] is None
+        assert row["author_playtime_forever"] is None

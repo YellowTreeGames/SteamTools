@@ -47,6 +47,7 @@ Focus on structural decisions, not line-level issues. Each concern should be wor
 - **Module boundary violations** — code that belongs in a different layer or package based on the project's established structure.
 - **Readability at scale** — patterns that are fine at current size but will become unmanageable as the codebase grows: deep nesting, long parameter lists passed everywhere, implicit shared state.
 - **Design pattern mismatch** — using the wrong pattern for the problem (a stateful class where a plain function suffices, a function that clearly wants to be a class, a config dict that wants to be a typed dataclass).
+- **Weirdness or Project Inconsistency** — Does it seem like the code is doing things the way the rest of the project is? Is it following conventions with formatting but more importantly with usage? For exmaple, if we edit the cli or add ui modals, are we using a command structure that feels consistent? Is the UX the same? Really dig in here, the last thing we want is to let amateur decisions clutter up the base. and make it unclear how to actually use the results.
 
 Do not flag small style issues or micro-optimizations. Reserve findings for structural decisions that affect how easy the codebase is to read, extend, or test.
 

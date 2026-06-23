@@ -10,7 +10,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 
 from steamtools.db.connection import get_connection, init_db
-from steamtools.db.staleness import needs_refresh_details
+from steamtools.db.staleness import needs_refresh_details, needs_refresh_review_summary
 from steamtools.steam_client import (
     get_app_details as _steam_app_details,
 )
@@ -19,6 +19,9 @@ from steamtools.steam_client import (
 )
 from steamtools.steam_client import (
     get_app_list_page as _steam_app_list_page,
+)
+from steamtools.steam_client import (
+    get_app_reviews as _steam_app_reviews,
 )
 
 DEFAULT_DETAILS_SLEEP: float = 1.5
@@ -178,6 +181,142 @@ class StoDB:
                     "row": None,
                     "detected_type": data.get("type") if data else None,
                 }
+
+    # ── Reviews ───────────────────────────────────────────────────────────────
+
+    def sync_reviews(self, appid: int, force: bool = False, language: str = "all") -> dict:
+        """Fetch and upsert all reviews for an appid from Steam.
+
+        Paginates until the cursor stops advancing. Individual review rows are
+        immutable once written — new pages only append, they never delete.
+
+        Returns {"status": "fetched"|"already_current", "summary": dict|None,
+                 "reviews_fetched": int}.
+        """
+        existing = self._fetch_review_summary(appid)
+        if not force and not needs_refresh_review_summary(existing):
+            return {"status": "already_current", "summary": existing, "reviews_fetched": 0}
+
+        cursor = "*"
+        total_fetched = 0
+        query_summary: dict | None = None
+        now = datetime.now(UTC).isoformat()
+
+        while True:
+            page = _steam_app_reviews(appid, cursor=cursor, language=language)
+            if not page.get("success"):
+                break
+            if query_summary is None:
+                query_summary = page.get("query_summary") or {}
+            reviews = page.get("reviews") or []
+            if not reviews:
+                break
+            with get_connection() as conn:
+                conn.executemany(
+                    f"""INSERT OR REPLACE INTO app_reviews
+                        ({", ".join(self._review_columns())})
+                        VALUES ({", ".join(f":{c}" for c in self._review_columns())})""",
+                    [self._row_from_review(appid, r, now) for r in reviews],
+                )
+            total_fetched += len(reviews)
+            new_cursor = page.get("cursor", "")
+            if not new_cursor or new_cursor == cursor:
+                break
+            cursor = new_cursor
+
+        if query_summary is not None:
+            with get_connection() as conn:
+                conn.execute(
+                    """INSERT OR REPLACE INTO app_review_summary
+                       (appid, total_reviews, total_positive, total_negative,
+                        review_score, review_score_desc, fetched_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        appid,
+                        query_summary.get("total_reviews"),
+                        query_summary.get("total_positive"),
+                        query_summary.get("total_negative"),
+                        query_summary.get("review_score"),
+                        query_summary.get("review_score_desc"),
+                        now,
+                    ),
+                )
+
+        return {"status": "fetched", "summary": query_summary, "reviews_fetched": total_fetched}
+
+    def get_review_summary(self, appid: int) -> dict | None:
+        """Return review summary for appid, fetching from Steam if stale or missing."""
+        row = self._fetch_review_summary(appid)
+        if needs_refresh_review_summary(row):
+            result = self.sync_reviews(appid)
+            return result["summary"]
+        return row
+
+    def review_stats(self) -> dict:
+        with get_connection() as conn:
+            s = conn.execute("SELECT COUNT(*) AS games, MAX(fetched_at) AS last_fetched FROM app_review_summary").fetchone()
+            r = conn.execute("SELECT COUNT(*) AS total FROM app_reviews").fetchone()
+        return {
+            "games_with_reviews": s["games"],
+            "total_reviews": r["total"],
+            "last_fetched": s["last_fetched"],
+        }
+
+    def _fetch_review_summary(self, appid: int) -> dict | None:
+        with get_connection() as conn:
+            row = conn.execute("SELECT * FROM app_review_summary WHERE appid = ?", (appid,)).fetchone()
+        return dict(row) if row else None
+
+    @staticmethod
+    def _review_columns() -> list[str]:
+        return [
+            "recommendationid",
+            "appid",
+            "author_steamid",
+            "author_num_games_owned",
+            "author_num_reviews",
+            "author_playtime_forever",
+            "author_playtime_at_review",
+            "language",
+            "review",
+            "timestamp_created",
+            "timestamp_updated",
+            "voted_up",
+            "votes_up",
+            "votes_funny",
+            "weighted_vote_score",
+            "comment_count",
+            "steam_purchase",
+            "received_for_free",
+            "written_during_early_access",
+            "fetched_at",
+        ]
+
+    @staticmethod
+    def _row_from_review(appid: int, review: dict, fetched_at: str) -> dict:
+        author = review.get("author") or {}
+        return {
+            "recommendationid": int(review["recommendationid"]),
+            "appid": appid,
+            "author_steamid": author.get("steamid"),
+            "author_num_games_owned": author.get("num_games_owned"),
+            "author_num_reviews": author.get("num_reviews"),
+            "author_playtime_forever": author.get("playtime_forever"),
+            "author_playtime_at_review": author.get("playtime_at_review"),
+            "language": review.get("language"),
+            "review": review.get("review"),
+            "timestamp_created": review.get("timestamp_created"),
+            "timestamp_updated": review.get("timestamp_updated"),
+            "voted_up": int(bool(review.get("voted_up"))),
+            "votes_up": review.get("votes_up"),
+            "votes_funny": review.get("votes_funny"),
+            "weighted_vote_score": float(review.get("weighted_vote_score") or 0),
+            "comment_count": review.get("comment_count"),
+            "steam_purchase": int(bool(review.get("steam_purchase"))),
+            "received_for_free": int(bool(review.get("received_for_free"))),
+            "written_during_early_access": int(bool(review.get("written_during_early_access"))),
+            "fetched_at": fetched_at,
+        }
 
     def _fetch_rows(self, table: str, appids: list[int]) -> dict[int, dict]:
         if not appids:

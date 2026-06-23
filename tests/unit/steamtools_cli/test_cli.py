@@ -8,14 +8,6 @@ from steamtools_cli.cli import _make_progress_logger, app
 
 runner = CliRunner()
 
-_STATUS = {
-    "apps_total": 100,
-    "apps_with_details": 60,
-    "apps_missing_details": 40,
-    "apps_last_fetched": "2025-01-15T00:00:00+00:00",
-    "details_total": 60,
-    "details_last_fetched": "2025-01-15T00:00:00+00:00",
-}
 _APP_STATS = {
     "total": 100,
     "with_details": 60,
@@ -29,7 +21,6 @@ _DETAILS_STATS = {
 
 def _mock_db(**method_overrides) -> MagicMock:
     db = MagicMock()
-    db.status.return_value = _STATUS
     db.app_stats.return_value = _APP_STATS
     db.app_details_stats.return_value = _DETAILS_STATS
     db.sync_app_list.return_value = 100
@@ -45,40 +36,41 @@ def _mock_db(**method_overrides) -> MagicMock:
     return db
 
 
-class TestStatusCommand:
+class TestInfoCommand:
     def test_exits_zero(self):
         with patch("steamtools_cli.cli.StoDB", return_value=_mock_db()):
-            result = runner.invoke(app, ["status"])
+            result = runner.invoke(app, ["info"])
         assert result.exit_code == 0
 
     def test_shows_apps_total(self):
         with patch("steamtools_cli.cli.StoDB", return_value=_mock_db()):
-            result = runner.invoke(app, ["status"])
+            result = runner.invoke(app, ["info"])
         assert "100" in result.output
 
     def test_shows_with_details_and_missing(self):
         with patch("steamtools_cli.cli.StoDB", return_value=_mock_db()):
-            result = runner.invoke(app, ["status"])
+            result = runner.invoke(app, ["info"])
         assert "60" in result.output
         assert "40" in result.output
 
     def test_shows_never_when_last_fetched_is_none(self):
         db = _mock_db()
-        db.status.return_value = {**_STATUS, "apps_last_fetched": None, "details_last_fetched": None}
+        db.app_stats.return_value = {**_APP_STATS, "last_fetched": None}
+        db.app_details_stats.return_value = {**_DETAILS_STATS, "last_fetched": None}
         with patch("steamtools_cli.cli.StoDB", return_value=db):
-            result = runner.invoke(app, ["status"])
+            result = runner.invoke(app, ["info"])
         assert "never" in result.output
 
 
-class TestAppInfoCommand:
+class TestInfoAppFlag:
     def test_exits_zero(self):
         with patch("steamtools_cli.cli.StoDB", return_value=_mock_db()):
-            result = runner.invoke(app, ["app", "info"])
+            result = runner.invoke(app, ["info", "--app"])
         assert result.exit_code == 0
 
     def test_shows_total_and_with_details(self):
         with patch("steamtools_cli.cli.StoDB", return_value=_mock_db()):
-            result = runner.invoke(app, ["app", "info"])
+            result = runner.invoke(app, ["info", "--app"])
         assert "100" in result.output
         assert "60" in result.output
 
@@ -86,69 +78,100 @@ class TestAppInfoCommand:
         db = _mock_db()
         db.app_stats.return_value = {**_APP_STATS, "last_fetched": None}
         with patch("steamtools_cli.cli.StoDB", return_value=db):
-            result = runner.invoke(app, ["app", "info"])
+            result = runner.invoke(app, ["info", "--app"])
         assert "never" in result.output
 
 
-class TestAppFetchCommand:
-    def test_full_refresh_prints_upserted_count(self):
+class TestFetchCommand:
+    def test_exits_zero(self):
         with patch("steamtools_cli.cli.StoDB", return_value=_mock_db()):
-            result = runner.invoke(app, ["app", "fetch"])
+            result = runner.invoke(app, ["fetch"])
         assert result.exit_code == 0
+
+    def test_fetches_app_list_with_full_refresh(self):
+        with patch("steamtools_cli.cli.StoDB", return_value=_mock_db()) as MockDB:
+            runner.invoke(app, ["fetch"])
+        MockDB.return_value.sync_app_list.assert_called_once_with(None)
+
+    def test_fetches_pending_details(self):
+        with patch("steamtools_cli.cli.StoDB", return_value=_mock_db()) as MockDB:
+            runner.invoke(app, ["fetch"])
+        MockDB.return_value.sync_app_details.assert_called_once()
+
+    def test_prints_both_outputs(self):
+        with patch("steamtools_cli.cli.StoDB", return_value=_mock_db()):
+            result = runner.invoke(app, ["fetch"])
+        assert "Upserted" in result.output
+        assert "Processed" in result.output
+
+
+class TestFetchAppFlag:
+    def test_exits_zero(self):
+        with patch("steamtools_cli.cli.StoDB", return_value=_mock_db()):
+            result = runner.invoke(app, ["fetch", "--app"])
+        assert result.exit_code == 0
+
+    def test_prints_upserted_count(self):
+        with patch("steamtools_cli.cli.StoDB", return_value=_mock_db()):
+            result = runner.invoke(app, ["fetch", "--app"])
         assert "Upserted 100 apps." in result.output
 
     def test_full_refresh_passes_none_count(self):
         with patch("steamtools_cli.cli.StoDB", return_value=_mock_db()) as MockDB:
-            runner.invoke(app, ["app", "fetch"])
+            runner.invoke(app, ["fetch", "--app"])
         MockDB.return_value.sync_app_list.assert_called_once_with(None)
 
     def test_count_flag_passed_through(self):
         with patch("steamtools_cli.cli.StoDB", return_value=_mock_db()) as MockDB:
-            result = runner.invoke(app, ["app", "fetch", "--count", "500"])
+            result = runner.invoke(app, ["fetch", "--app", "--count", "500"])
         assert result.exit_code == 0
         MockDB.return_value.sync_app_list.assert_called_once_with(500)
 
 
-class TestAppDetailsInfoCommand:
+class TestInfoAppDetailsFlag:
     def test_exits_zero(self):
         with patch("steamtools_cli.cli.StoDB", return_value=_mock_db()):
-            result = runner.invoke(app, ["app-details", "info"])
+            result = runner.invoke(app, ["info", "--app-details"])
         assert result.exit_code == 0
 
     def test_shows_total(self):
         with patch("steamtools_cli.cli.StoDB", return_value=_mock_db()):
-            result = runner.invoke(app, ["app-details", "info"])
+            result = runner.invoke(app, ["info", "--app-details"])
         assert "60" in result.output
 
     def test_shows_never_when_last_fetched_is_none(self):
         db = _mock_db()
         db.app_details_stats.return_value = {**_DETAILS_STATS, "last_fetched": None}
         with patch("steamtools_cli.cli.StoDB", return_value=db):
-            result = runner.invoke(app, ["app-details", "info"])
+            result = runner.invoke(app, ["info", "--app-details"])
         assert "never" in result.output
 
 
-class TestDetailsFetchCommand:
+class TestFetchAppDetailsFlag:
+    def test_exits_zero(self):
+        with patch("steamtools_cli.cli.StoDB", return_value=_mock_db()):
+            result = runner.invoke(app, ["fetch", "--app-details"])
+        assert result.exit_code == 0
+
     def test_batch_prints_processed_count(self):
         with patch("steamtools_cli.cli.StoDB", return_value=_mock_db()):
-            result = runner.invoke(app, ["app-details", "fetch"])
-        assert result.exit_code == 0
+            result = runner.invoke(app, ["fetch", "--app-details"])
         assert "Processed 5 apps." in result.output
 
     def test_batch_count_flag_sets_limit(self):
         with patch("steamtools_cli.cli.StoDB", return_value=_mock_db()) as MockDB:
-            runner.invoke(app, ["app-details", "fetch", "--count", "10"])
+            runner.invoke(app, ["fetch", "--app-details", "--count", "10"])
         assert MockDB.return_value.sync_app_details.call_args.kwargs["limit"] == 10
 
     def test_sleep_flag_sets_details_sleep(self):
         with patch("steamtools_cli.cli.StoDB") as MockStoDB:
             MockStoDB.return_value.sync_app_details.return_value = 0
-            runner.invoke(app, ["app-details", "fetch", "--sleep", "3.5"])
+            runner.invoke(app, ["fetch", "--app-details", "--sleep", "3.5"])
         assert MockStoDB.call_args.kwargs["details_sleep"] == 3.5
 
     def test_single_appid_game_output(self):
         with patch("steamtools_cli.cli.StoDB", return_value=_mock_db()):
-            result = runner.invoke(app, ["app-details", "fetch", "--appid", "10"])
+            result = runner.invoke(app, ["fetch", "--app-details", "--appid", "10"])
         assert result.exit_code == 0
         assert "status=game" in result.output
         assert "name=Test Game" in result.output
@@ -157,7 +180,7 @@ class TestDetailsFetchCommand:
         db = _mock_db()
         db.sync_app_details_one.return_value = {"status": "not_a_game", "appid": 10, "row": None, "detected_type": "dlc"}
         with patch("steamtools_cli.cli.StoDB", return_value=db):
-            result = runner.invoke(app, ["app-details", "fetch", "--appid", "10"])
+            result = runner.invoke(app, ["fetch", "--app-details", "--appid", "10"])
         assert result.exit_code == 0
         assert "status=not_a_game" in result.output
         assert "dlc" in result.output
@@ -171,22 +194,26 @@ class TestDetailsFetchCommand:
             "detected_type": None,
         }
         with patch("steamtools_cli.cli.StoDB", return_value=db):
-            result = runner.invoke(app, ["app-details", "fetch", "--appid", "10"])
+            result = runner.invoke(app, ["fetch", "--app-details", "--appid", "10"])
         assert result.exit_code == 0
         assert "already_current" in result.output
 
     def test_force_with_appid_passes_force_true(self):
         with patch("steamtools_cli.cli.StoDB", return_value=_mock_db()) as MockDB:
-            result = runner.invoke(app, ["app-details", "fetch", "--appid", "10", "--force"])
+            result = runner.invoke(app, ["fetch", "--app-details", "--appid", "10", "--force"])
         assert result.exit_code == 0
         MockDB.return_value.sync_app_details_one.assert_called_once_with(10, force=True)
 
     def test_force_without_appid_exits_nonzero(self):
-        result = runner.invoke(app, ["app-details", "fetch", "--force"])
+        result = runner.invoke(app, ["fetch", "--app-details", "--force"])
         assert result.exit_code != 0
 
     def test_appid_and_count_mutually_exclusive(self):
-        result = runner.invoke(app, ["app-details", "fetch", "--appid", "10", "--count", "5"])
+        result = runner.invoke(app, ["fetch", "--app-details", "--appid", "10", "--count", "5"])
+        assert result.exit_code != 0
+
+    def test_appid_without_app_details_flag_exits_nonzero(self):
+        result = runner.invoke(app, ["fetch", "--app", "--appid", "10"])
         assert result.exit_code != 0
 
 

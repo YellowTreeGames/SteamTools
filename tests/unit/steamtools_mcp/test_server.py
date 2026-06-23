@@ -1,0 +1,126 @@
+"""Unit tests for steamtools_mcp.server — StoDB fully mocked, no DB or Steam calls."""
+
+from unittest.mock import MagicMock, patch
+
+import steamtools_mcp.server as server_mod
+from tests.conftest import RYDER_APPID
+
+_STATUS = {
+    "apps_total": 200,
+    "apps_with_details": 150,
+    "apps_missing_details": 50,
+    "apps_last_fetched": "2025-01-15T00:00:00+00:00",
+    "details_total": 150,
+    "details_last_fetched": "2025-01-15T00:00:00+00:00",
+}
+
+_SEARCH_RESULTS = [
+    {"appid": RYDER_APPID, "name": "Ryder", "has_details": 1},
+]
+
+_SYNC_RESULT = {
+    "status": "game",
+    "appid": RYDER_APPID,
+    "row": {"name": "Ryder", "type": "game"},
+    "detected_type": "game",
+}
+
+
+def _mock_db(**overrides) -> MagicMock:
+    db = MagicMock()
+    db.status.return_value = _STATUS
+    db.search_apps.return_value = _SEARCH_RESULTS
+    db.sync_app_details_one.return_value = _SYNC_RESULT
+    db.sync_app_list.return_value = 500
+    db.sync_app_details.return_value = 25
+    for attr, val in overrides.items():
+        getattr(db, attr).return_value = val
+    return db
+
+
+class TestStatusTool:
+    def test_returns_stodb_status(self):
+        with patch("steamtools_mcp.server.StoDB", return_value=_mock_db()):
+            result = server_mod.status()
+        assert result == _STATUS
+
+    def test_delegates_to_stodb(self):
+        with patch("steamtools_mcp.server.StoDB", return_value=_mock_db()) as MockDB:
+            server_mod.status()
+        MockDB.return_value.status.assert_called_once()
+
+
+class TestSearchGamesTool:
+    def test_returns_search_results(self):
+        with patch("steamtools_mcp.server.StoDB", return_value=_mock_db()):
+            result = server_mod.search_games("ryder")
+        assert result == _SEARCH_RESULTS
+
+    def test_passes_query_to_search_apps(self):
+        with patch("steamtools_mcp.server.StoDB", return_value=_mock_db()) as MockDB:
+            server_mod.search_games("half-life")
+        MockDB.return_value.search_apps.assert_called_once_with("half-life")
+
+    def test_empty_query_returns_all(self):
+        with patch("steamtools_mcp.server.StoDB", return_value=_mock_db()) as MockDB:
+            server_mod.search_games("")
+        MockDB.return_value.search_apps.assert_called_once_with("")
+
+
+class TestGetAppDetailsTool:
+    def test_returns_sync_result(self):
+        with patch("steamtools_mcp.server.StoDB", return_value=_mock_db()):
+            result = server_mod.get_app_details(RYDER_APPID)
+        assert result == _SYNC_RESULT
+
+    def test_passes_appid_and_force_false_by_default(self):
+        with patch("steamtools_mcp.server.StoDB", return_value=_mock_db()) as MockDB:
+            server_mod.get_app_details(RYDER_APPID)
+        MockDB.return_value.sync_app_details_one.assert_called_once_with(RYDER_APPID, force=False)
+
+    def test_passes_force_true_when_requested(self):
+        with patch("steamtools_mcp.server.StoDB", return_value=_mock_db()) as MockDB:
+            server_mod.get_app_details(RYDER_APPID, force=True)
+        MockDB.return_value.sync_app_details_one.assert_called_once_with(RYDER_APPID, force=True)
+
+    def test_not_a_game_result_passes_through(self):
+        not_game = {"status": "not_a_game", "appid": 99, "row": None, "detected_type": "dlc"}
+        db = _mock_db()
+        db.sync_app_details_one.return_value = not_game
+        with patch("steamtools_mcp.server.StoDB", return_value=db):
+            result = server_mod.get_app_details(99)
+        assert result == not_game
+
+
+class TestFetchAppListTool:
+    def test_returns_upserted_count(self):
+        with patch("steamtools_mcp.server.StoDB", return_value=_mock_db()):
+            result = server_mod.fetch_app_list()
+        assert result == {"upserted": 500}
+
+    def test_full_refresh_passes_none(self):
+        with patch("steamtools_mcp.server.StoDB", return_value=_mock_db()) as MockDB:
+            server_mod.fetch_app_list()
+        MockDB.return_value.sync_app_list.assert_called_once_with(None)
+
+    def test_partial_refresh_passes_count(self):
+        with patch("steamtools_mcp.server.StoDB", return_value=_mock_db()) as MockDB:
+            server_mod.fetch_app_list(count=200)
+        MockDB.return_value.sync_app_list.assert_called_once_with(200)
+
+
+class TestFetchAppDetailsTool:
+    def test_returns_processed_count(self):
+        with patch("steamtools_mcp.server.StoDB", return_value=_mock_db()):
+            result = server_mod.fetch_app_details()
+        assert result == {"processed": 25}
+
+    def test_no_limit_passes_none(self):
+        with patch("steamtools_mcp.server.StoDB", return_value=_mock_db()) as MockDB:
+            server_mod.fetch_app_details()
+        MockDB.return_value.sync_app_details.assert_called_once_with(limit=None)
+
+    def test_count_sets_limit(self):
+        with patch("steamtools_mcp.server.StoDB", return_value=_mock_db()) as MockDB:
+            server_mod.fetch_app_details(count=50)
+        MockDB.return_value.sync_app_details.assert_called_once_with(limit=50)

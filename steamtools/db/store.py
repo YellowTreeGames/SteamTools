@@ -61,9 +61,7 @@ class StoDB:
 
     def app_details_stats(self) -> dict:
         with get_connection() as conn:
-            row = conn.execute(
-                "SELECT COUNT(*) AS total, MAX(fetched_at) AS last_fetched FROM app_details"
-            ).fetchone()
+            row = conn.execute("SELECT COUNT(*) AS total, MAX(fetched_at) AS last_fetched FROM app_details").fetchone()
         return dict(row)
 
     def status(self) -> dict:
@@ -109,19 +107,17 @@ class StoDB:
 
     # ── App Details ───────────────────────────────────────────────────────────
 
-    def get_app_details(self, appids: list[int], auto_sync: bool = True) -> dict[int, dict | None]:
-        """Return app_details rows keyed by appid.
+    def get_app_details(self, appids: list[int]) -> dict[int, dict | None]:
+        """Return app_details rows keyed by appid, fetching from Steam if stale or missing.
 
-        With auto_sync=True, stale or missing rows are fetched from Steam before returning.
         Value is None for appids confirmed not to be games.
         """
         existing = self._fetch_details_rows(appids)
-        if auto_sync:
-            stale = [aid for aid in appids if needs_refresh_details(existing.get(aid))]
-            for appid in stale:
-                self.sync_app_details_one(appid, force=True)
-            if stale:
-                existing = self._fetch_details_rows(appids)
+        stale = [aid for aid in appids if needs_refresh_details(existing.get(aid))]
+        for appid in stale:
+            self.sync_app_details_one(appid, force=True)
+        if stale:
+            existing = self._fetch_details_rows(appids)
         return {aid: existing.get(aid) for aid in appids}
 
     def sync_app_details(

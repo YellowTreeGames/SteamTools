@@ -88,6 +88,7 @@ def get_app_reviews(
         "num_per_page": num_per_page,
         "review_type": "all",
         "purchase_type": "all",
+        "filter_offtopic_activity": 0,
     }
     url = APP_REVIEWS_URL.format(appid=appid)
     resp = _get_with_retry(url, params, max_retries, f"reviews for {appid}")

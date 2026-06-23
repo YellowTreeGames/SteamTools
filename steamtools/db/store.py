@@ -203,7 +203,7 @@ class StoDB:
         now = datetime.now(UTC).isoformat()
 
         while True:
-            page = _steam_app_reviews(appid, cursor=cursor, language=language)
+            page = _steam_app_reviews(appid, cursor=cursor, language=language, filter="recent")
             if not page.get("success"):
                 break
             if query_summary is None:

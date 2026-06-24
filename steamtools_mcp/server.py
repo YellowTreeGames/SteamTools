@@ -5,6 +5,8 @@ Run via: uv run python -m steamtools_mcp.server
 
 from mcp.server.fastmcp import FastMCP
 
+from steamtools.analysis.pipeline import run_absa_pipeline
+from steamtools.analysis.store import AnalysisDB
 from steamtools.db import DEFAULT_DETAILS_SLEEP, StoDB
 
 mcp = FastMCP("steamtools")
@@ -74,12 +76,27 @@ def fetch_reviews(appid: int, force: bool = False, language: str = "all") -> dic
 
 @mcp.tool()
 def get_review_summary(appid: int) -> dict | None:
-    """Get the review summary for a game by appid.
+    """Get the stored review summary for a game by appid.
 
-    Returns the stored summary row if fresh, otherwise fetches from Steam first.
-    Returns None if no summary could be retrieved.
+    Returns the DB row if present, or None if reviews have not been fetched yet.
+    To refresh stale data, call fetch_reviews first.
     """
     return StoDB().get_review_summary(appid)
+
+
+@mcp.tool()
+def run_absa(appid: int, force: bool = False, delay: float = 4.0) -> dict:
+    """Run ABSA on all stored reviews for a game.
+
+    Returns {"processed": int, "skipped": int, "failed": int}.
+    """
+    return run_absa_pipeline(appid, StoDB(), AnalysisDB(), force=force, delay=delay)
+
+
+@mcp.tool()
+def get_absa_results(appid: int, category: str | None = None, sentiment: str | None = None) -> list[dict]:
+    """Get ABSA aspect rows for a game, optionally filtered by category and/or sentiment."""
+    return AnalysisDB().get_absa_aspects(appid, category=category, sentiment=sentiment)
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-"""Unit tests for steamtools_mcp.server — StoDB fully mocked, no DB or Steam calls."""
+"""Unit tests for steamtools_mcp.server — StoDB and AnalysisDB fully mocked."""
 
 from unittest.mock import MagicMock, patch
 
@@ -193,3 +193,80 @@ class TestGetReviewSummaryTool:
         with patch("steamtools_mcp.server.StoDB", return_value=db):
             result = server_mod.get_review_summary(99999)
         assert result is None
+
+
+_ABSA_PIPELINE_RESULT = {"processed": 3, "skipped": 1, "failed": 0}
+_ABSA_ASPECTS = [
+    {
+        "id": 1,
+        "review_id": 111,
+        "appid": RYDER_APPID,
+        "category": "Gameplay",
+        "specific_feature": "combat",
+        "sentiment": "Positive",
+        "rationale": "Fun.",
+    },
+]
+
+
+class TestRunAbsaTool:
+    def test_returns_pipeline_result(self):
+        with (
+            patch("steamtools_mcp.server.StoDB"),
+            patch("steamtools_mcp.server.AnalysisDB"),
+            patch("steamtools_mcp.server.run_absa_pipeline", return_value=_ABSA_PIPELINE_RESULT),
+        ):
+            result = server_mod.run_absa(RYDER_APPID)
+        assert result == _ABSA_PIPELINE_RESULT
+
+    def test_passes_appid_and_defaults(self):
+        with (
+            patch("steamtools_mcp.server.StoDB"),
+            patch("steamtools_mcp.server.AnalysisDB"),
+            patch("steamtools_mcp.server.run_absa_pipeline", return_value=_ABSA_PIPELINE_RESULT) as mock_pipeline,
+        ):
+            server_mod.run_absa(RYDER_APPID)
+        call_kwargs = mock_pipeline.call_args
+        assert call_kwargs[0][0] == RYDER_APPID
+        assert call_kwargs[1]["force"] is False
+        assert call_kwargs[1]["delay"] == 4.0
+
+    def test_passes_force_and_delay(self):
+        with (
+            patch("steamtools_mcp.server.StoDB"),
+            patch("steamtools_mcp.server.AnalysisDB"),
+            patch("steamtools_mcp.server.run_absa_pipeline", return_value=_ABSA_PIPELINE_RESULT) as mock_pipeline,
+        ):
+            server_mod.run_absa(RYDER_APPID, force=True, delay=2.0)
+        assert mock_pipeline.call_args[1]["force"] is True
+        assert mock_pipeline.call_args[1]["delay"] == 2.0
+
+
+class TestGetAbsaResultsTool:
+    def test_returns_aspects(self):
+        mock_adb = MagicMock()
+        mock_adb.get_absa_aspects.return_value = _ABSA_ASPECTS
+        with patch("steamtools_mcp.server.AnalysisDB", return_value=mock_adb):
+            result = server_mod.get_absa_results(RYDER_APPID)
+        assert result == _ABSA_ASPECTS
+
+    def test_passes_appid_no_filters(self):
+        mock_adb = MagicMock()
+        mock_adb.get_absa_aspects.return_value = []
+        with patch("steamtools_mcp.server.AnalysisDB", return_value=mock_adb):
+            server_mod.get_absa_results(RYDER_APPID)
+        mock_adb.get_absa_aspects.assert_called_once_with(RYDER_APPID, category=None, sentiment=None)
+
+    def test_passes_category_filter(self):
+        mock_adb = MagicMock()
+        mock_adb.get_absa_aspects.return_value = []
+        with patch("steamtools_mcp.server.AnalysisDB", return_value=mock_adb):
+            server_mod.get_absa_results(RYDER_APPID, category="Gameplay")
+        mock_adb.get_absa_aspects.assert_called_once_with(RYDER_APPID, category="Gameplay", sentiment=None)
+
+    def test_passes_sentiment_filter(self):
+        mock_adb = MagicMock()
+        mock_adb.get_absa_aspects.return_value = []
+        with patch("steamtools_mcp.server.AnalysisDB", return_value=mock_adb):
+            server_mod.get_absa_results(RYDER_APPID, sentiment="Positive")
+        mock_adb.get_absa_aspects.assert_called_once_with(RYDER_APPID, category=None, sentiment="Positive")

@@ -443,26 +443,33 @@ class TestSyncReviews:
             result = fresh_db.sync_reviews(RYDER_APPID)
         assert result["reviews_fetched"] == 0
 
+    def test_filter_parameter_passed_to_steam(self, fresh_db):
+        _insert_app(RYDER_APPID, "Ryder")
+        with patch("steamtools.db.store._steam_app_reviews", side_effect=[_REVIEW_PAGE_1, _REVIEW_PAGE_2]) as mock_steam:
+            fresh_db.sync_reviews(RYDER_APPID, filter="all")
+        assert mock_steam.call_args_list[0].kwargs["filter"] == "all"
 
-class TestGetReviewSummary:
-    def test_returns_summary_when_fresh(self, fresh_db):
+    def test_all_reviews_written_in_single_transaction(self, fresh_db):
         _insert_app(RYDER_APPID, "Ryder")
         with patch("steamtools.db.store._steam_app_reviews", side_effect=[_REVIEW_PAGE_1, _REVIEW_PAGE_2]):
             fresh_db.sync_reviews(RYDER_APPID)
-        with patch("steamtools.db.store._steam_app_reviews") as mock_steam:
-            summary = fresh_db.get_review_summary(RYDER_APPID)
-        mock_steam.assert_not_called()
+        assert fresh_db.review_stats()["total_reviews"] == 2
+
+
+class TestGetReviewSummary:
+    def test_returns_summary_when_present(self, fresh_db):
+        _insert_app(RYDER_APPID, "Ryder")
+        with patch("steamtools.db.store._steam_app_reviews", side_effect=[_REVIEW_PAGE_1, _REVIEW_PAGE_2]):
+            fresh_db.sync_reviews(RYDER_APPID)
+        summary = fresh_db.get_review_summary(RYDER_APPID)
         assert summary is not None
         assert summary["total_reviews"] == 850
 
-    def test_fetches_when_missing(self, fresh_db):
-        _insert_app(RYDER_APPID, "Ryder")
-        with patch("steamtools.db.store._steam_app_reviews", side_effect=[_REVIEW_PAGE_1, _REVIEW_PAGE_2]) as mock_steam:
-            summary = fresh_db.get_review_summary(RYDER_APPID)
-        assert mock_steam.called
-        assert summary is not None
+    def test_returns_none_when_missing(self, fresh_db):
+        summary = fresh_db.get_review_summary(RYDER_APPID)
+        assert summary is None
 
-    def test_fetches_when_stale(self, fresh_db):
+    def test_returns_stale_row_without_fetching(self, fresh_db):
         from steamtools.db.connection import get_connection
 
         _insert_app(RYDER_APPID, "Ryder")
@@ -475,9 +482,11 @@ class TestGetReviewSummary:
                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (RYDER_APPID, 100, 90, 10, 8, "Very Positive", stale_date),
             )
-        with patch("steamtools.db.store._steam_app_reviews", side_effect=[_REVIEW_PAGE_1, _REVIEW_PAGE_2]) as mock_steam:
-            fresh_db.get_review_summary(RYDER_APPID)
-        assert mock_steam.called
+        with patch("steamtools.db.store._steam_app_reviews") as mock_steam:
+            summary = fresh_db.get_review_summary(RYDER_APPID)
+        mock_steam.assert_not_called()
+        assert summary is not None
+        assert summary["total_reviews"] == 100
 
 
 class TestReviewStats:

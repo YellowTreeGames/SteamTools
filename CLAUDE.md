@@ -12,9 +12,14 @@ Project is managed with `uv` (Python >=3.13, venv at `.venv/`).
 - Run the CLI: `uv run sto <command>` (entrypoint is `steamtools_cli/cli.py`, built with Typer)
   - `sto info [--app] [--app-details]` — combined status from all tables; narrow with flags
   - `sto fetch [--app] [--app-details] [--count N] [--sleep S] [--appid ID] [--force]` — fetch apps and/or details from Steam; defaults to both
-  - `sto reviews fetch --appid ID [--language L] [--force]` — fetch all reviews for a game and store them locally
+  - `sto reviews fetch --appid ID [--language L] [--filter F] [--force]` — fetch all reviews for a game and store them locally; filter is 'recent' or 'all'
   - `sto reviews info [--appid ID]` — show stored review stats; with `--appid`, shows that game's summary
-- Requires a Steam Web API key: copy `.env.example` to `.env` and set `STEAM_API_KEY` (get one at https://steamcommunity.com/dev/apikey). Loaded via `steamtools/config.py` (`python-dotenv`).
+  - `sto analysis absa run --appid ID [--force] [--delay S] [--batch-size N] [--model M]` — run ABSA pipeline on stored reviews; model defaults to 'gemini-2.0-flash'
+  - `sto analysis absa info --appid ID` — show ABSA aspect breakdown by category and sentiment
+- Requires two API keys: 
+  - Steam Web API key: copy `.env.example` to `.env` and set `STEAM_API_KEY` (get one at https://steamcommunity.com/dev/apikey).
+  - Gemini API key: set `GEMINI_API_KEY` in `.env` (required for ABSA pipeline; get one at https://aistudio.google.com/apikey).
+  - Both loaded via `steamtools/config.py` (`python-dotenv`).
 
 ## Testing
 
@@ -29,9 +34,13 @@ tests/
         test_connection.py            # mirrors steamtools/db/connection.py
         test_staleness.py             # mirrors steamtools/db/staleness.py
         test_store.py                 # mirrors steamtools/db/store.py
+      analysis/
+        test_store.py                 # mirrors steamtools/analysis/store.py
       test_steam_client.py            # mirrors steamtools/steam_client.py
     steamtools_cli/
       test_cli.py                     # mirrors steamtools_cli/cli.py
+      test_analysis.py                # mirrors steamtools_cli/analysis.py
+      test_reviews.py                 # mirrors steamtools_cli/reviews.py
     steamtools_mcp/
       test_server.py                  # mirrors steamtools_mcp/server.py
   integration/
@@ -67,8 +76,12 @@ Once the design review passes, run `/update-claude-md` via a subagent to keep th
 
 All domain logic lives in `steamtools/` (the core library). The CLI and MCP server are thin routing layers that import from it. **The dataset is games-only by design** — DLC, demos, software, videos, hardware, mods, etc. are filtered out at every stage rather than stored and filtered later.
 
-- `steamtools/config.py` — loads `STEAM_API_KEY` from `.env` via python-dotenv.
+- `steamtools/config.py` — loads `STEAM_API_KEY` and `GEMINI_API_KEY` from `.env` via python-dotenv.
 - `steamtools/steam_client.py` — thin HTTP wrappers around the Steam Web API (`get_app_list`, `get_app_list_page`, `get_app_details`, `get_app_reviews`).
+- `steamtools/analysis/` — ABSA (Aspect-Based Sentiment Analysis) pipeline using Gemini API.
+  - `connection.py` — DB schema and init for analysis table (`absa_aspects`).
+  - `store.py` — `AnalysisDB` class for reading/writing ABSA results.
+  - `pipeline.py` — `run_absa_pipeline()` function; batches reviews, calls Gemini API, stores aspects with sentiment/category.
 - `steamtools/db/` — **the central database API**. All reads and writes go through `StoDB` (defined in `store.py`). Never open raw `get_connection()` calls outside this package; add a method to `StoDB` instead.
   - `connection.py` — `DB_PATH`, `SCHEMA`, `get_connection()`, `init_db()`. The DB file lives at `data/steamtools.db` (gitignored). Schema includes `apps`, `app_details`, `app_review_summary`, and `app_reviews`. On init, drops legacy tables and runs additive column migrations.
   - `staleness.py` — `needs_refresh_details(row)`: app_details are stale after 30 days. `needs_refresh_review_summary(row)`: review summary is stale after 7 days.
@@ -82,4 +95,4 @@ All domain logic lives in `steamtools/` (the core library). The CLI and MCP serv
     - `get_review_summary(appid)` — DB-first review summary fetch; refreshes if stale
     - `search_apps(query)` — name substring search
 - `steamtools_cli/` — CLI routing only, no business logic. Entrypoint: `sto` → `steamtools_cli.cli:app`.
-- `steamtools_mcp/` — MCP server. Tools: `status`, `search_games`, `get_app_details`, `fetch_app_list`, `fetch_app_details`, `fetch_reviews`, `get_review_summary`. Entrypoint: `uv run python -m steamtools_mcp.server`.
+- `steamtools_mcp/` — MCP server. Tools: `status`, `search_games`, `get_app_details`, `fetch_app_list`, `fetch_app_details`, `fetch_reviews`, `get_review_summary`, `run_absa`, `get_absa_results`. Entrypoint: `uv run python -m steamtools_mcp.server`.

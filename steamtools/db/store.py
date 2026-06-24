@@ -26,6 +26,29 @@ from steamtools.steam_client import (
 
 DEFAULT_DETAILS_SLEEP: float = 1.5
 
+_REVIEW_COLUMNS: tuple[str, ...] = (
+    "recommendationid",
+    "appid",
+    "author_steamid",
+    "author_num_games_owned",
+    "author_num_reviews",
+    "author_playtime_forever",
+    "author_playtime_at_review",
+    "language",
+    "review",
+    "timestamp_created",
+    "timestamp_updated",
+    "voted_up",
+    "votes_up",
+    "votes_funny",
+    "weighted_vote_score",
+    "comment_count",
+    "steam_purchase",
+    "received_for_free",
+    "written_during_early_access",
+    "fetched_at",
+)
+
 
 class StoDB:
     def __init__(self, details_sleep: float = DEFAULT_DETAILS_SLEEP):
@@ -46,6 +69,14 @@ class StoDB:
                 ORDER BY apps.name
                 """,
                 (f"%{query}%",),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_reviews(self, appid: int) -> list[dict]:
+        with get_connection() as conn:
+            rows = conn.execute(
+                "SELECT recommendationid, review FROM app_reviews WHERE appid = ?",
+                (appid,),
             ).fetchall()
         return [dict(r) for r in rows]
 
@@ -184,7 +215,7 @@ class StoDB:
 
     # ── Reviews ───────────────────────────────────────────────────────────────
 
-    def sync_reviews(self, appid: int, force: bool = False, language: str = "all") -> dict:
+    def sync_reviews(self, appid: int, force: bool = False, language: str = "all", filter: str = "recent") -> dict:  # noqa: A002
         """Fetch and upsert all reviews for an appid from Steam.
 
         Paginates until the cursor stops advancing. Individual review rows are
@@ -201,31 +232,30 @@ class StoDB:
         total_fetched = 0
         query_summary: dict | None = None
         now = datetime.now(UTC).isoformat()
+        col_list = ", ".join(_REVIEW_COLUMNS)
+        col_params = ", ".join(f":{c}" for c in _REVIEW_COLUMNS)
 
-        while True:
-            page = _steam_app_reviews(appid, cursor=cursor, language=language, filter="recent")
-            if not page.get("success"):
-                break
-            if query_summary is None:
-                query_summary = page.get("query_summary") or {}
-            reviews = page.get("reviews") or []
-            if not reviews:
-                break
-            with get_connection() as conn:
+        with get_connection() as conn:
+            while True:
+                page = _steam_app_reviews(appid, cursor=cursor, language=language, filter=filter)
+                if not page.get("success"):
+                    break
+                if query_summary is None:
+                    query_summary = page.get("query_summary") or {}
+                reviews = page.get("reviews") or []
+                if not reviews:
+                    break
                 conn.executemany(
-                    f"""INSERT OR REPLACE INTO app_reviews
-                        ({", ".join(self._review_columns())})
-                        VALUES ({", ".join(f":{c}" for c in self._review_columns())})""",
+                    f"INSERT OR REPLACE INTO app_reviews ({col_list}) VALUES ({col_params})",
                     [self._row_from_review(appid, r, now) for r in reviews],
                 )
-            total_fetched += len(reviews)
-            new_cursor = page.get("cursor", "")
-            if not new_cursor or new_cursor == cursor:
-                break
-            cursor = new_cursor
+                total_fetched += len(reviews)
+                new_cursor = page.get("cursor", "")
+                if not new_cursor or new_cursor == cursor:
+                    break
+                cursor = new_cursor
 
-        if query_summary is not None:
-            with get_connection() as conn:
+            if query_summary is not None:
                 conn.execute(
                     """INSERT OR REPLACE INTO app_review_summary
                        (appid, total_reviews, total_positive, total_negative,
@@ -245,12 +275,8 @@ class StoDB:
         return {"status": "fetched", "summary": query_summary, "reviews_fetched": total_fetched}
 
     def get_review_summary(self, appid: int) -> dict | None:
-        """Return review summary for appid, fetching from Steam if stale or missing."""
-        row = self._fetch_review_summary(appid)
-        if needs_refresh_review_summary(row):
-            result = self.sync_reviews(appid)
-            return result["summary"]
-        return row
+        """Return the stored review summary row, or None if not in the DB."""
+        return self._fetch_review_summary(appid)
 
     def review_stats(self) -> dict:
         with get_connection() as conn:
@@ -266,31 +292,6 @@ class StoDB:
         with get_connection() as conn:
             row = conn.execute("SELECT * FROM app_review_summary WHERE appid = ?", (appid,)).fetchone()
         return dict(row) if row else None
-
-    @staticmethod
-    def _review_columns() -> list[str]:
-        return [
-            "recommendationid",
-            "appid",
-            "author_steamid",
-            "author_num_games_owned",
-            "author_num_reviews",
-            "author_playtime_forever",
-            "author_playtime_at_review",
-            "language",
-            "review",
-            "timestamp_created",
-            "timestamp_updated",
-            "voted_up",
-            "votes_up",
-            "votes_funny",
-            "weighted_vote_score",
-            "comment_count",
-            "steam_purchase",
-            "received_for_free",
-            "written_during_early_access",
-            "fetched_at",
-        ]
 
     @staticmethod
     def _row_from_review(appid: int, review: dict, fetched_at: str) -> dict:

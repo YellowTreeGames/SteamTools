@@ -8,7 +8,7 @@ from steamtools_cli.cli import app
 
 runner = CliRunner()
 
-_PIPELINE_RESULT = {"processed": 5, "skipped": 2, "failed": 1}
+_PIPELINE_RESULT = {"processed": 5, "skipped": 2, "failed": 1, "taxonomy_built": False}
 _ABSA_STATS = {
     "appid": 3283790,
     "reviews_processed": 7,

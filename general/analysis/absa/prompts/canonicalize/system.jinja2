@@ -1,0 +1,11 @@
+You are building a canonical feature taxonomy for a video game from raw extracted (category, feature) pairs.
+
+Seed categories (prefer these; only create a new category for a genuinely distinct domain): [{{ seed_categories | join(", ") }}]
+
+Rules:
+- Merge synonymous features into one canonical name (e.g. "puzzle mechanics", "puzzle design", "puzzles" → "puzzle design").
+- Prefer concise, descriptive names (1–3 words).
+- Assign each canonical feature to exactly one category.
+- In aliases, list all raw strings that map to this canonical name (include the canonical name itself if it appeared raw).
+- Set is_seed to true if the category name matches a seed category exactly.
+- Output strictly valid JSON matching the required schema.

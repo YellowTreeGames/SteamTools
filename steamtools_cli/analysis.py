@@ -14,12 +14,15 @@ analysis_app.add_typer(absa_app, name="absa")
 @absa_app.command("run")
 def absa_run(
     appid: int = typer.Option(..., help="Steam appid to analyse."),
-    force: bool = typer.Option(False, help="Re-analyse already-processed reviews."),
+    force: bool = typer.Option(False, help="Wipe all existing ABSA data and rerun from discovery."),
     delay: float = typer.Option(4.0, help="Seconds between Gemini requests."),
-    batch_size: int | None = typer.Option(None, help="Stop after processing this many reviews."),
-    model: str = typer.Option("gemini-2.0-flash", help="Gemini model name."),
+    batch_size: int | None = typer.Option(None, help="Stop classify phase after processing this many reviews."),
+    discovery_sample_size: int = typer.Option(50, help="Max reviews to sample during discovery (without replacement)."),
+    discovery_batch_size: int = typer.Option(10, help="Reviews per batch sent to LLM during discovery."),
+    model: str = typer.Option("gemini-3.1-flash-lite", help="Gemini model name."),
 ) -> None:
     """Run ABSA on all stored reviews for a game."""
+    print(f"Running ABSA for appid={appid} model={model}")
     result = run_absa_pipeline(
         appid,
         StoDB(),
@@ -27,9 +30,13 @@ def absa_run(
         force=force,
         delay=delay,
         batch_size=batch_size,
+        discovery_sample_size=discovery_sample_size,
+        discovery_batch_size=discovery_batch_size,
         model=model,
+        on_progress=print,
     )
-    print(f"processed={result['processed']} skipped={result['skipped']} failed={result['failed']}")
+    built = " (taxonomy rebuilt)" if result["taxonomy_built"] else ""
+    print(f"\nDone{built} — processed={result['processed']} skipped={result['skipped']} failed={result['failed']}")
 
 
 @absa_app.command("info")

@@ -23,6 +23,32 @@ CREATE TABLE IF NOT EXISTS absa_aspects (
     sentiment TEXT NOT NULL,
     rationale TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS absa_taxonomy (
+    appid INTEGER PRIMARY KEY,
+    status TEXT NOT NULL DEFAULT 'pending',
+    discovery_sample_size INTEGER NOT NULL,
+    discovery_reviews_sampled INTEGER,
+    early_stopped INTEGER NOT NULL DEFAULT 0,
+    model TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS absa_taxonomy_categories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    appid INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    is_seed INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(appid, name)
+);
+CREATE TABLE IF NOT EXISTS absa_taxonomy_features (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    appid INTEGER NOT NULL,
+    category_id INTEGER NOT NULL,
+    canonical_name TEXT NOT NULL,
+    aliases TEXT NOT NULL DEFAULT '[]',
+    UNIQUE(appid, canonical_name),
+    FOREIGN KEY (category_id) REFERENCES absa_taxonomy_categories(id)
+);
 """
 
 

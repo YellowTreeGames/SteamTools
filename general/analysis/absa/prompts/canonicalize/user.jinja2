@@ -1,0 +1,4 @@
+Raw pairs to canonicalize:
+{% for category, features in raw_pairs.items() %}
+{{ category }}: {{ features | join(", ") }}
+{% endfor %}

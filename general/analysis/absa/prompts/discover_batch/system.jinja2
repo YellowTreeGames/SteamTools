@@ -1,0 +1,15 @@
+You are an expert qualitative analyst discovering the feature taxonomy of a video game from player reviews.
+
+Extract every (category, feature) pair mentioned across the reviews in this batch.
+- category: one of [{{ seed_categories | join(", ") }}] or a new category name if nothing fits
+- feature: 1–3 words for the specific aspect (e.g. "boss music", "inventory sorting")
+
+{% if accumulated %}
+Already discovered — only add genuinely new pairs not represented below:
+{% for category, features in accumulated.items() %}
+- {{ category }}: {{ features | join(", ") }}
+{% endfor %}
+{% endif %}
+
+Set taxonomy_complete to true when you are confident no further reviews will reveal significantly new categories or features.
+Output strictly valid JSON matching the required schema.

@@ -44,9 +44,17 @@ def run_absa_pipeline(
         if not reviewable:
             raise ValueError(f"No reviews with text found for appid={appid}. Fetch reviews first.")
 
-        sample = random.sample(reviewable, min(discovery_sample_size, len(reviewable)))  # nosec B311
+        n_sample = min(discovery_sample_size, len(reviewable))
+        reviewable_by_len = sorted(reviewable, key=lambda r: len(r["review"]), reverse=True)
+        slots = [n_sample // 4] * 4
+        for i in range(n_sample % 4):
+            slots[i] += 1
+        q_bounds = [len(reviewable_by_len) * i // 4 for i in range(5)]
+        sample: list[dict] = []
+        for q in range(4):
+            bucket = reviewable_by_len[q_bounds[q] : q_bounds[q + 1]]
+            sample.extend(random.sample(bucket, min(slots[q], len(bucket))))  # nosec B311
         accumulated: dict[str, list[str]] = {}
-        early_stopped = False
         reviews_sampled = 0
 
         db_analysis.upsert_taxonomy(appid, "discovering", discovery_sample_size, model)
@@ -60,21 +68,17 @@ def run_absa_pipeline(
             batch_texts = [r["review"][:1500] for r in batch]
             batch_num = batch_start // discovery_batch_size + 1
 
-            new_pairs, done = discover_batch(batch_texts, accumulated, client, model)
+            new_pairs, _ = discover_batch(batch_texts, accumulated, client, model)
             for pair in new_pairs:
                 if pair.feature not in accumulated.get(pair.category, []):
                     accumulated.setdefault(pair.category, []).append(pair.feature)
             reviews_sampled += len(batch_texts)
 
             if on_progress:
-                on_progress(
-                    f"  [{batch_num}/{total_batches}] {len(batch_texts)} reviews: +{len(new_pairs)} pairs, complete={done}"
-                )
+                on_progress(f"  [{batch_num}/{total_batches}] {len(batch_texts)} reviews: +{len(new_pairs)} pairs")
 
-            if done:
-                early_stopped = True
-                break
-            time.sleep(delay)
+            if batch_start + discovery_batch_size < len(sample):
+                time.sleep(delay)
 
         if on_progress:
             on_progress("Canonicalize: building canonical taxonomy...")
@@ -84,7 +88,7 @@ def run_absa_pipeline(
             [c.model_dump() for c in canonical],
             discovery_sample_size=discovery_sample_size,
             discovery_reviews_sampled=reviews_sampled,
-            early_stopped=early_stopped,
+            early_stopped=False,
             model=model,
         )
         feature_count = sum(len(c.features) for c in canonical)
@@ -116,6 +120,26 @@ def run_absa_pipeline(
 
         try:
             aspects = analyze_review(text, model, client, taxonomy=taxonomy)
+
+            if len(aspects) <= 2 and len(text.strip()) > 500:
+                time.sleep(delay)
+                new_pairs, _ = discover_batch([text[:1500]], taxonomy, client, model)
+                genuinely_new = []
+                for pair in new_pairs:
+                    features = taxonomy.setdefault(pair.category, [])
+                    if pair.feature not in features:
+                        features.append(pair.feature)
+                        genuinely_new.append((pair.category, pair.feature))
+                if genuinely_new:
+                    db_analysis.extend_taxonomy(appid, genuinely_new)
+                    if on_progress:
+                        on_progress(f"  [{i}/{total}] taxonomy +{len(genuinely_new)} pair(s), re-classifying")
+                else:
+                    if on_progress:
+                        on_progress(f"  [{i}/{total}] no new pairs, re-classifying with current taxonomy")
+                time.sleep(delay)
+                aspects = analyze_review(text, model, client, taxonomy=taxonomy)
+
             db_analysis.save_absa_result(review_id, appid, [a.model_dump() for a in aspects], model)
             processed += 1
             if on_progress:

@@ -2,6 +2,7 @@
 
 import json
 from datetime import UTC, datetime
+from typing import cast
 
 from steamtools.analysis.connection import get_connection, init_db
 
@@ -105,6 +106,25 @@ class AnalysisDB:
                         (appid, cat_id, feat["canonical_name"], json.dumps(feat["aliases"])),
                     )
 
+    def extend_taxonomy(self, appid: int, new_pairs: list[tuple[str, str]]) -> None:
+        """Add new (category, feature) pairs to the taxonomy. Creates the category row if needed."""
+        with get_connection() as conn:
+            for category, feature in new_pairs:
+                conn.execute(
+                    "INSERT OR IGNORE INTO absa_taxonomy_categories (appid, name, is_seed) VALUES (?, ?, 0)",
+                    (appid, category),
+                )
+                cat_row = conn.execute(
+                    "SELECT id FROM absa_taxonomy_categories WHERE appid = ? AND name = ?",
+                    (appid, category),
+                ).fetchone()
+                cat_id = cat_row["id"]
+                conn.execute(
+                    "INSERT OR IGNORE INTO absa_taxonomy_features (appid, category_id, canonical_name, aliases)"
+                    " VALUES (?, ?, ?, '[]')",
+                    (appid, cat_id, feature),
+                )
+
     def get_taxonomy_for_classify(self, appid: int) -> dict[str, list[str]]:
         with get_connection() as conn:
             cats = conn.execute(
@@ -133,6 +153,48 @@ class AnalysisDB:
         with get_connection() as conn:
             rows = conn.execute(query, params).fetchall()
         return [dict(r) for r in rows]
+
+    def get_feature_breakdown(self, appid: int) -> list[dict]:
+        """Return per-category feature breakdown with sentiment counts, sorted by total mentions."""
+        with get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT category, specific_feature, LOWER(sentiment) as sentiment, COUNT(*) as count
+                FROM absa_aspects
+                WHERE appid = ?
+                GROUP BY category, specific_feature, LOWER(sentiment)
+                """,
+                (appid,),
+            ).fetchall()
+
+        # Aggregate into {category: {feature: {sentiment: count}}}
+        cats: dict[str, dict[str, dict[str, int]]] = {}
+        for r in rows:
+            cats.setdefault(r["category"], {}).setdefault(r["specific_feature"], {})[r["sentiment"]] = r["count"]
+
+        result = []
+        for cat, features in cats.items():
+            cat_total = sum(sum(s.values()) for s in features.values())
+            feat_list = []
+            for feat, sentiments in features.items():
+                pos = sentiments.get("positive", 0)
+                neg = sentiments.get("negative", 0)
+                feat_list.append(
+                    {
+                        "feature": feat,
+                        "positive": pos,
+                        "negative": neg,
+                        "mixed": sentiments.get("mixed", 0),
+                        "total": sum(sentiments.values()),
+                        "score": pos - neg,
+                    }
+                )
+            feat_list.sort(key=lambda f: cast(int, f["score"]), reverse=True)
+            cat_score = sum(cast(int, f["score"]) for f in feat_list)
+            result.append({"category": cat, "total": cat_total, "score": cat_score, "features": feat_list})
+
+        result.sort(key=lambda c: cast(int, c["total"]), reverse=True)
+        return result
 
     def absa_stats(self, appid: int) -> dict:
         with get_connection() as conn:

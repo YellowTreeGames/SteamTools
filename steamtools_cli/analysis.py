@@ -1,10 +1,14 @@
 """Analysis pipeline CLI commands."""
 
 import typer
+from rich.console import Console
+from rich.text import Text
 
 from steamtools.analysis.pipeline import run_absa_pipeline
 from steamtools.analysis.store import AnalysisDB
 from steamtools.db.store import StoDB
+
+_console = Console()
 
 analysis_app = typer.Typer(help="Analysis pipeline commands.")
 absa_app = typer.Typer(help="Aspect-Based Sentiment Analysis.")
@@ -39,18 +43,58 @@ def absa_run(
     print(f"\nDone{built} — processed={result['processed']} skipped={result['skipped']} failed={result['failed']}")
 
 
+_BAR_WIDTH = 20
+
+
+def _sentiment_bar(pos: int, neg: int, mix: int) -> Text:
+    total = pos + neg + mix
+    bar = Text()
+    if total == 0:
+        bar.append("─" * _BAR_WIDTH, style="dim")
+        return bar
+    pos_w = round(pos / total * _BAR_WIDTH)
+    neg_w = round(neg / total * _BAR_WIDTH)
+    mix_w = _BAR_WIDTH - pos_w - neg_w
+    bar.append("█" * pos_w, style="green")
+    bar.append("█" * mix_w, style="yellow")
+    bar.append("█" * neg_w, style="red")
+    return bar
+
+
 @absa_app.command("info")
 def absa_info(
     appid: int = typer.Option(..., help="Steam appid to show analysis for."),
 ) -> None:
-    """Show ABSA breakdown for a game by category and sentiment."""
-    stats = AnalysisDB().absa_stats(appid)
-    print(f"appid={appid}  reviews_processed={stats['reviews_processed']}")
-    print()
-    print("By category:")
-    for row in stats["by_category"]:
-        print(f"  {row['category']:<20} {row['count']}")
-    print()
-    print("By sentiment:")
-    for row in stats["by_sentiment"]:
-        print(f"  {row['sentiment']:<20} {row['count']}")
+    """Show ABSA feature breakdown for a game, grouped by category."""
+    db = AnalysisDB()
+    stats = db.absa_stats(appid)
+    breakdown = db.get_feature_breakdown(appid)
+
+    total_aspects = sum(r["count"] for r in stats["by_sentiment"])
+    _console.print(f"appid={appid}  reviews_processed={stats['reviews_processed']}  aspects={total_aspects}\n")
+
+    for cat in breakdown:
+        score: int = cat["score"]
+        score_str = f"+{score}" if score > 0 else str(score)
+        score_style = "green" if score > 0 else "red" if score < 0 else "dim"
+        header = Text()
+        header.append(str(cat["category"]), style="bold cyan")
+        header.append(f"  ({cat['total']} mentions,  score ", style="dim")
+        header.append(score_str, style=score_style)
+        header.append(")", style="dim")
+        _console.print(header)
+        for feat in cat["features"]:
+            pos: int = feat["positive"]
+            neg: int = feat["negative"]
+            mix: int = feat["mixed"]
+            counts = Text()
+            counts.append(f"+{pos}", style="green")
+            counts.append(" ")
+            counts.append(f"-{neg}", style="red")
+            if mix:
+                counts.append(" ")
+                counts.append(f"~{mix}", style="yellow")
+            name = Text(f"  {feat['feature']:<33}", style="white")
+            line = Text.assemble(name, " ", _sentiment_bar(pos, neg, mix), "  ", counts)
+            _console.print(line)
+        _console.print()

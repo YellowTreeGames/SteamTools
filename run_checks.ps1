@@ -19,6 +19,6 @@ Step "Ruff format check" "uv run ruff format --check ."
 Step "Ruff lint"         "uv run ruff check ."
 Step "Mypy type check"   "uv run mypy steamtools steamtools_cli steamtools_mcp"
 Step "Bandit security"   "uv run bandit -r steamtools steamtools_cli steamtools_mcp --skip B608 -q"
-Step "Pytest"            "uv run pytest tests/ -m 'not integration and not e2e' -q --cov=steamtools --cov=steamtools_cli --cov=steamtools_mcp --cov=general --cov-report=term-missing --cov-fail-under=90"
+Step "Pytest"            "uv run pytest tests/ -q --cov=steamtools --cov=steamtools_cli --cov=steamtools_mcp --cov-report=term-missing --cov-fail-under=90"
 
 Write-Host "`nAll checks passed." -ForegroundColor Green

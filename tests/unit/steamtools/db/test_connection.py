@@ -1,92 +1,30 @@
-"""Unit tests for steamtools.db.connection — schema, init, and connection behaviour."""
+"""Unit tests for steamtools.db.connection."""
 
-import sqlite3
+import pytest
+from mongoengine import disconnect_all, get_db
 
-import steamtools.db.connection as conn_mod
-from steamtools.db.connection import get_connection, init_db
-
-
-class TestInitDb:
-    def test_creates_apps_table(self, tmp_db):
-        init_db()
-        with get_connection() as conn:
-            row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='apps'").fetchone()
-        assert row is not None
-
-    def test_creates_app_details_table(self, tmp_db):
-        init_db()
-        with get_connection() as conn:
-            row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='app_details'").fetchone()
-        assert row is not None
-
-    def test_drops_legacy_eval_results_table(self, tmp_db):
-        with sqlite3.connect(conn_mod.DB_PATH) as c:
-            c.execute("CREATE TABLE IF NOT EXISTS eval_results (id INTEGER PRIMARY KEY)")
-        init_db()
-        with get_connection() as conn:
-            row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='eval_results'").fetchone()
-        assert row is None
-
-    def test_creates_app_review_summary_table(self, tmp_db):
-        init_db()
-        with get_connection() as conn:
-            row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='app_review_summary'").fetchone()
-        assert row is not None
-
-    def test_creates_app_reviews_table(self, tmp_db):
-        init_db()
-        with get_connection() as conn:
-            row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='app_reviews'").fetchone()
-        assert row is not None
-
-    def test_app_reviews_table_has_expected_columns(self, tmp_db):
-        init_db()
-        with get_connection() as conn:
-            cols = {r[1] for r in conn.execute("PRAGMA table_info(app_reviews)").fetchall()}
-        assert "recommendationid" in cols
-        assert "voted_up" in cols
-        assert "review" in cols
-
-    def test_idempotent_second_call_does_not_raise(self, tmp_db):
-        init_db()
-        init_db()
-        with get_connection() as conn:
-            tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-        assert "apps" in tables
-        assert "app_details" in tables
-
-    def test_creates_data_directory_if_missing(self, tmp_path, monkeypatch):
-        nested = tmp_path / "deep" / "nested" / "test.db"
-        monkeypatch.setattr("steamtools.db.connection.DB_PATH", nested)
-        init_db()
-        assert nested.exists()
+from steamtools.db.connection import connect_db
+from tests.conftest import MOCK_CLIENT
 
 
-class TestGetConnection:
-    def test_yields_connection_with_row_factory(self, tmp_db):
-        init_db()
-        with get_connection() as conn:
-            conn.execute("INSERT INTO apps (appid, name, last_seen_at) VALUES (1, 'Test', '2025-01-01')")
-            row = conn.execute("SELECT * FROM apps WHERE appid = 1").fetchone()
-        assert row["appid"] == 1
-        assert row["name"] == "Test"
+@pytest.fixture(autouse=True)
+def _clean_connections():
+    disconnect_all()
+    yield
+    disconnect_all()
 
-    def test_commits_on_clean_exit(self, tmp_db):
-        init_db()
-        with get_connection() as conn:
-            conn.execute("INSERT INTO apps (appid, name, last_seen_at) VALUES (1, 'Test', '2025-01-01')")
-        with get_connection() as conn:
-            row = conn.execute("SELECT * FROM apps WHERE appid = 1").fetchone()
-        assert row is not None
 
-    def test_does_not_commit_on_exception(self, tmp_db):
-        init_db()
-        try:
-            with get_connection() as conn:
-                conn.execute("INSERT INTO apps (appid, name, last_seen_at) VALUES (1, 'Test', '2025-01-01')")
-                raise RuntimeError("forced failure")
-        except RuntimeError:
-            pass
-        with get_connection() as conn:
-            row = conn.execute("SELECT * FROM apps WHERE appid = 1").fetchone()
-        assert row is None
+class TestConnectDb:
+    def test_uses_configured_database_name(self, monkeypatch):
+        monkeypatch.setattr("steamtools.config.MONGO_DB", "from_config")
+        connect_db(**MOCK_CLIENT)
+        assert get_db().name == "from_config"
+
+    def test_explicit_db_overrides_config(self):
+        connect_db(db="other", **MOCK_CLIENT)
+        assert get_db().name == "other"
+
+    def test_repeated_calls_with_same_settings_are_idempotent(self):
+        connect_db(db="same", **MOCK_CLIENT)
+        connect_db(db="same", **MOCK_CLIENT)
+        assert get_db().name == "same"
